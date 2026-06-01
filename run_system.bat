@@ -9,25 +9,26 @@ echo.
 python --version 2>nul
 if errorlevel 1 (
     echo [ERROR] Python no encontrado en PATH.
-    echo [ERROR] Instale Python 3.11.9 o 3.12.x desde https://www.python.org
+    echo [ERROR] Instale Python 3.11+ desde https://www.python.org
     echo [ERROR] Asegurese de marcar "Add Python to PATH" durante la instalacion.
     pause
     exit /b 1
 )
 
-:: Verify Python version compatibility (must be 3.11 or 3.12)
-python -c "import sys; v=sys.version_info; exit(0 if v.major==3 and v.minor in (11,12,13) else 1)" 2>nul
+:: Show Python version
+for /f "tokens=*" %%i in ('python --version 2^>^&1') do echo [INFO] %%i detectado
+
+:: Verify Python version compatibility (3.11 to 3.14)
+python -c "import sys; v=sys.version_info; exit(0 if v.major==3 and v.minor >= 11 else 1)" 2>nul
 if errorlevel 1 (
     echo.
     echo [ADVERTENCIA] =====================================================
-    echo [ADVERTENCIA] Su version de Python puede no ser compatible.
-    echo [ADVERTENCIA] Este proyecto requiere Python 3.11.x, 3.12.x o 3.13.x
-    echo [ADVERTENCIA] Python 3.14 NO es compatible con pandas actualmente.
-    echo [ADVERTENCIA] Descargue Python 3.11.9: https://www.python.org/downloads/release/python-3119/
+    echo [ADVERTENCIA] Se requiere Python 3.11 o superior.
+    echo [ADVERTENCIA] Descargue desde: https://www.python.org/downloads/
     echo [ADVERTENCIA] =====================================================
     echo.
-    echo Presione cualquier tecla para intentar continuar de todas formas...
-    pause >nul
+    pause
+    exit /b 1
 )
 
 :: Check if virtual environment exists
@@ -44,28 +45,28 @@ if not exist "venv" (
 :: Activate virtual environment
 call venv\Scripts\activate.bat
 
-:: Upgrade pip
+:: Upgrade pip first
 echo [INFO] Actualizando pip...
 python -m pip install --upgrade pip --quiet 2>nul
 
-:: Install dependencies with binary-only fallback for pandas/numpy
+:: Install dependencies
 echo [INFO] Instalando dependencias...
 pip install -r requirements.txt --quiet 2>nul
 if errorlevel 1 (
     echo.
-    echo [INFO] Reintentando instalacion con binarios precompilados...
-    echo [INFO] (Esto resuelve errores de compilacion en Windows)
-    echo.
-    pip install pandas numpy --only-binary=:all: --quiet
-    pip install -r requirements.txt --quiet
+    echo [INFO] Primer intento fallo. Reintentando con --only-binary para pandas/numpy...
+    pip install pandas numpy --only-binary=:all: --quiet 2>nul
+    if errorlevel 1 (
+        echo [INFO] Intentando con versiones especificas para su Python...
+        pip install "pandas>=2.3.3" "numpy>=2.4.0" --only-binary=:all: --quiet 2>nul
+    )
+    pip install -r requirements.txt --quiet 2>nul
     if errorlevel 1 (
         echo.
         echo [ERROR] =====================================================
         echo [ERROR] No se pudieron instalar las dependencias.
-        echo [ERROR] Posibles soluciones:
-        echo [ERROR]   1. Instale Python 3.11.9 (recomendado)
-        echo [ERROR]   2. Instale Visual Studio Build Tools
-        echo [ERROR]   3. Ejecute: pip install pandas --only-binary=:all:
+        echo [ERROR] Intente manualmente:
+        echo [ERROR]   pip install -r requirements.txt
         echo [ERROR] =====================================================
         pause
         exit /b 1
@@ -78,10 +79,10 @@ echo [OK] Dependencias instaladas correctamente.
 if not exist ".env" (
     echo.
     echo [ADVERTENCIA] Archivo .env no encontrado.
-    echo [INFO] Creando .env desde .env.example...
     if exist ".env.example" (
         copy .env.example .env >nul
-        echo [INFO] Archivo .env creado. Edite las credenciales antes de usar el sistema.
+        echo [INFO] Archivo .env creado desde .env.example.
+        echo [INFO] Edite las credenciales antes de usar el sistema.
     ) else (
         echo [ERROR] No se encontro .env.example. Configure manualmente.
         pause

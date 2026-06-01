@@ -1,52 +1,48 @@
 # ============================================================
 # TradingSignal Pro - Dependencias
-# Compatible con Python 3.11.x, 3.12.x, 3.13.x, 3.14.x
+# Compatible con Python 3.11.x a 3.14.x (Windows/Linux/Mac)
+# Última verificación: Junio 2026
 # ============================================================
 
 # --- Framework Web ---
-fastapi>=0.104.0,<1.0.0
-uvicorn[standard]>=0.24.0,<1.0.0
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
 
 # --- Procesamiento de Datos ---
-# Para Python 3.14: pandas>=2.2.3 y numpy>=2.1.0 son necesarios
-# Si falla, ejecute: pip install pandas numpy --only-binary=:all:
-pandas>=2.2.3
-numpy>=2.1.0
-openpyxl>=3.1.0,<4.0.0
-
-# --- Análisis Técnico ---
-# NOTA: Los indicadores están implementados manualmente en app/services/indicators.py
-# No se requiere pandas-ta ni ta (incompatibles con Python 3.14 por dependencia de numba)
+# pandas 3.x y numpy 2.4+ tienen wheels precompilados para Python 3.14
+pandas>=2.3.3
+numpy>=2.4.0
+openpyxl>=3.1.5
 
 # --- Visualización ---
-plotly>=5.18.0,<6.0.0
+plotly>=5.18.0
 
 # --- Scheduler ---
 apscheduler>=3.10.0,<4.0.0
 
 # --- Comunicaciones ---
-python-telegram-bot>=20.7,<22.0
-httpx>=0.25.0,<1.0.0
-websockets>=12.0,<14.0
+python-telegram-bot>=21.0
+httpx>=0.27.0
+websockets>=13.0
 
 # --- Base de Datos ---
-sqlalchemy>=2.0.0,<3.0.0
-aiosqlite>=0.19.0,<1.0.0
+sqlalchemy>=2.0.23
+aiosqlite>=0.20.0
 
 # --- Logging ---
-loguru>=0.7.0,<1.0.0
+loguru>=0.7.2
 
 # --- Configuración ---
-python-dotenv>=1.0.0,<2.0.0
-pydantic>=2.5.0,<3.0.0
-pydantic-settings>=2.1.0,<3.0.0
+python-dotenv>=1.0.0
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
 
 # --- Google APIs (OAuth2 + Gmail) ---
-google-auth>=2.25.0,<3.0.0
-google-auth-oauthlib>=1.2.0,<2.0.0
-google-api-python-client>=2.100.0,<3.0.0
+google-auth>=2.25.0
+google-auth-oauthlib>=1.2.0
+google-api-python-client>=2.111.0
 
 # --- Utilidades ---
-jinja2>=3.1.0,<4.0.0
-python-multipart>=0.0.6,<1.0.0
-aiofiles>=23.2.0,<25.0.0
+jinja2>=3.1.2
+python-multipart>=0.0.9
+aiofiles>=23.2.0
