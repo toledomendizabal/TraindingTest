@@ -228,41 +228,121 @@ class ExcelManager:
     def get_config(self) -> Dict:
         """Get current trading configuration."""
         try:
-            assets_df = pd.read_excel(self.config_file, sheet_name="Assets")
-            params_df = pd.read_excel(self.config_file, sheet_name="Parameters")
-            indicators_df = pd.read_excel(self.config_file, sheet_name="Indicators")
+            # Read all available sheets
+            result = {"assets": [], "parameters": {}, "indicators": []}
 
-            # Convert parameters to dict with sanitized values
-            params_dict = {}
-            for _, row in params_df.iterrows():
-                params_dict[str(row["parameter"])] = _sanitize_value(row["value"])
+            # Get sheet names available in the file
+            xl = pd.ExcelFile(self.config_file)
+            available_sheets = xl.sheet_names
 
-            return {
-                "assets": _sanitize_list(assets_df.to_dict("records")),
-                "parameters": params_dict,
-                "indicators": _sanitize_list(indicators_df.to_dict("records"))
-            }
+            if "Assets" in available_sheets:
+                assets_df = pd.read_excel(xl, sheet_name="Assets")
+                result["assets"] = _sanitize_list(assets_df.to_dict("records"))
+
+            if "Parameters" in available_sheets:
+                params_df = pd.read_excel(xl, sheet_name="Parameters")
+                params_dict = {}
+                for _, row in params_df.iterrows():
+                    params_dict[str(row["parameter"])] = _sanitize_value(row["value"])
+                result["parameters"] = params_dict
+            else:
+                # Return default parameters if sheet doesn't exist
+                result["parameters"] = {
+                    "initial_capital": settings.INITIAL_CAPITAL,
+                    "risk_percentage": settings.RISK_PERCENTAGE,
+                    "min_indicators": 6,
+                    "signal_timeframe": "5m"
+                }
+
+            if "Indicators" in available_sheets:
+                indicators_df = pd.read_excel(xl, sheet_name="Indicators")
+                result["indicators"] = _sanitize_list(indicators_df.to_dict("records"))
+            else:
+                # Return default indicators if sheet doesn't exist
+                from app.models.indicator import get_default_indicators
+                indicators = get_default_indicators()
+                result["indicators"] = [
+                    {"name": i.name, "category": i.category, "enabled": i.enabled, "weight": i.weight}
+                    for i in indicators
+                ]
+
+            xl.close()
+            return result
+
         except Exception as e:
             logger.error(f"Error reading config: {e}")
-            return {}
+            # Return defaults on any error
+            return {
+                "assets": [{"symbol": s, "active": True} for s in settings.ACTIVE_ASSETS],
+                "parameters": {
+                    "initial_capital": settings.INITIAL_CAPITAL,
+                    "risk_percentage": settings.RISK_PERCENTAGE,
+                    "min_indicators": 6,
+                    "signal_timeframe": "5m"
+                },
+                "indicators": []
+            }
 
     def update_config(self, config: Dict) -> bool:
-        """Update trading configuration in Excel."""
+        """Update trading configuration in Excel, preserving existing sheets."""
         try:
+            # First, read existing data to preserve sheets not being updated
+            existing = {}
+            if os.path.exists(self.config_file):
+                try:
+                    xl = pd.ExcelFile(self.config_file)
+                    for sheet in xl.sheet_names:
+                        existing[sheet] = pd.read_excel(xl, sheet_name=sheet)
+                    xl.close()
+                except Exception:
+                    pass
+
+            # Prepare data to write
+            sheets_to_write = {}
+
+            # Assets sheet
+            if "assets" in config:
+                sheets_to_write["Assets"] = pd.DataFrame(config["assets"])
+            elif "Assets" in existing:
+                sheets_to_write["Assets"] = existing["Assets"]
+
+            # Parameters sheet
+            if "parameters" in config:
+                params = [{"parameter": k, "value": v} for k, v in config["parameters"].items()]
+                sheets_to_write["Parameters"] = pd.DataFrame(params)
+            elif "Parameters" in existing:
+                sheets_to_write["Parameters"] = existing["Parameters"]
+            else:
+                # Create default parameters if none exist
+                params = [
+                    {"parameter": "initial_capital", "value": settings.INITIAL_CAPITAL},
+                    {"parameter": "risk_percentage", "value": settings.RISK_PERCENTAGE},
+                    {"parameter": "min_indicators", "value": 6},
+                    {"parameter": "signal_timeframe", "value": "5m"}
+                ]
+                sheets_to_write["Parameters"] = pd.DataFrame(params)
+
+            # Indicators sheet
+            if "indicators" in config:
+                sheets_to_write["Indicators"] = pd.DataFrame(config["indicators"])
+            elif "Indicators" in existing:
+                sheets_to_write["Indicators"] = existing["Indicators"]
+            else:
+                # Create default indicators if none exist
+                from app.models.indicator import get_default_indicators
+                indicators = get_default_indicators()
+                ind_data = {
+                    "name": [i.name for i in indicators],
+                    "category": [i.category for i in indicators],
+                    "enabled": [i.enabled for i in indicators],
+                    "weight": [i.weight for i in indicators]
+                }
+                sheets_to_write["Indicators"] = pd.DataFrame(ind_data)
+
+            # Write all sheets at once
             with pd.ExcelWriter(self.config_file, engine="openpyxl") as writer:
-                if "assets" in config:
-                    pd.DataFrame(config["assets"]).to_excel(
-                        writer, sheet_name="Assets", index=False
-                    )
-                if "parameters" in config:
-                    params = [{"parameter": k, "value": v} for k, v in config["parameters"].items()]
-                    pd.DataFrame(params).to_excel(
-                        writer, sheet_name="Parameters", index=False
-                    )
-                if "indicators" in config:
-                    pd.DataFrame(config["indicators"]).to_excel(
-                        writer, sheet_name="Indicators", index=False
-                    )
+                for sheet_name, df in sheets_to_write.items():
+                    df.to_excel(writer, sheet_name=sheet_name, index=False)
 
             logger.info("Configuration updated in Excel")
             return True
