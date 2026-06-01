@@ -1,10 +1,40 @@
 """Excel manager for signal tracking and configuration."""
 import os
+import numpy as np
 import pandas as pd
 from datetime import datetime
 from typing import Optional, List, Dict
 from loguru import logger
 from app.core.config import settings
+
+
+def _sanitize_value(val):
+    """Convert numpy/pandas types to native Python types for JSON serialization."""
+    if val is None or (isinstance(val, float) and np.isnan(val)):
+        return None
+    if isinstance(val, (np.integer,)):
+        return int(val)
+    if isinstance(val, (np.floating,)):
+        return float(val)
+    if isinstance(val, (np.bool_,)):
+        return bool(val)
+    if isinstance(val, (np.ndarray,)):
+        return val.tolist()
+    if isinstance(val, pd.Timestamp):
+        return val.isoformat()
+    if isinstance(val, (np.str_,)):
+        return str(val)
+    return val
+
+
+def _sanitize_dict(d: dict) -> dict:
+    """Recursively sanitize all values in a dictionary."""
+    return {k: _sanitize_value(v) for k, v in d.items()}
+
+
+def _sanitize_list(lst: list) -> list:
+    """Sanitize all dicts in a list."""
+    return [_sanitize_dict(d) if isinstance(d, dict) else _sanitize_value(d) for d in lst]
 
 
 class ExcelManager:
@@ -176,7 +206,8 @@ class ExcelManager:
         try:
             df = pd.read_excel(self.signals_file, sheet_name="Signals")
             active = df[df["status"] == "ACTIVE"]
-            return active.to_dict("records")
+            records = active.to_dict("records")
+            return _sanitize_list(records)
         except Exception:
             return []
 
@@ -189,7 +220,8 @@ class ExcelManager:
             if start_date:
                 closed = closed[closed["closed_at"] >= start_date]
 
-            return closed.to_dict("records")
+            records = closed.to_dict("records")
+            return _sanitize_list(records)
         except Exception:
             return []
 
@@ -200,10 +232,15 @@ class ExcelManager:
             params_df = pd.read_excel(self.config_file, sheet_name="Parameters")
             indicators_df = pd.read_excel(self.config_file, sheet_name="Indicators")
 
+            # Convert parameters to dict with sanitized values
+            params_dict = {}
+            for _, row in params_df.iterrows():
+                params_dict[str(row["parameter"])] = _sanitize_value(row["value"])
+
             return {
-                "assets": assets_df.to_dict("records"),
-                "parameters": dict(zip(params_df["parameter"], params_df["value"])),
-                "indicators": indicators_df.to_dict("records")
+                "assets": _sanitize_list(assets_df.to_dict("records")),
+                "parameters": params_dict,
+                "indicators": _sanitize_list(indicators_df.to_dict("records"))
             }
         except Exception as e:
             logger.error(f"Error reading config: {e}")
@@ -239,19 +276,19 @@ class ExcelManager:
         try:
             df = pd.read_excel(self.signals_file, sheet_name="Signals")
 
-            total = len(df)
-            active = len(df[df["status"] == "ACTIVE"])
+            total = int(len(df))
+            active = int(len(df[df["status"] == "ACTIVE"]))
             closed = df[df["status"] != "ACTIVE"]
 
-            wins = len(closed[closed["profit_loss"] > 0])
-            losses = len(closed[closed["profit_loss"] < 0])
-            total_closed = len(closed)
+            wins = int(len(closed[closed["profit_loss"] > 0]))
+            losses = int(len(closed[closed["profit_loss"] < 0]))
+            total_closed = int(len(closed))
 
-            win_rate = (wins / total_closed * 100) if total_closed > 0 else 0
-            total_profit = closed[closed["profit_loss"] > 0]["profit_loss"].sum()
-            total_loss = abs(closed[closed["profit_loss"] < 0]["profit_loss"].sum())
-            profit_factor = (total_profit / total_loss) if total_loss > 0 else 0
-            net_profit = total_profit - total_loss
+            win_rate = float((wins / total_closed * 100) if total_closed > 0 else 0)
+            total_profit = float(closed[closed["profit_loss"] > 0]["profit_loss"].sum())
+            total_loss = float(abs(closed[closed["profit_loss"] < 0]["profit_loss"].sum()))
+            profit_factor = float((total_profit / total_loss) if total_loss > 0 else 0)
+            net_profit = float(total_profit - total_loss)
 
             return {
                 "total_signals": total,
@@ -269,8 +306,8 @@ class ExcelManager:
         except Exception:
             return {
                 "total_signals": 0, "active_signals": 0, "closed_signals": 0,
-                "wins": 0, "losses": 0, "win_rate": 0, "total_profit": 0,
-                "total_loss": 0, "net_profit": 0, "profit_factor": 0
+                "wins": 0, "losses": 0, "win_rate": 0.0, "total_profit": 0.0,
+                "total_loss": 0.0, "net_profit": 0.0, "profit_factor": 0.0
             }
 
 

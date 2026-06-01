@@ -1,5 +1,6 @@
 """Market data service using Twelve Data API."""
 import asyncio
+import time
 import httpx
 import pandas as pd
 from datetime import datetime, timedelta
@@ -44,6 +45,10 @@ class MarketDataService:
         self._client: Optional[httpx.AsyncClient] = None
         self._price_cache: Dict[str, Dict] = {}
         self._last_update: Dict[str, datetime] = {}
+        # Rate limiting: Twelve Data free tier = 8 requests/minute
+        self._request_times: List[float] = []
+        self._max_requests_per_minute = 7  # Leave 1 credit margin
+        self._rate_lock = asyncio.Lock()
 
     async def get_client(self) -> httpx.AsyncClient:
         """Get or create HTTP client."""
@@ -60,9 +65,34 @@ class MarketDataService:
         """Convert internal symbol to Twelve Data format."""
         return self.SYMBOL_MAP.get(asset, asset)
 
+    async def _wait_for_rate_limit(self):
+        """Wait if necessary to respect API rate limits."""
+        async with self._rate_lock:
+            now = time.time()
+            # Remove requests older than 60 seconds
+            self._request_times = [t for t in self._request_times if now - t < 60]
+
+            if len(self._request_times) >= self._max_requests_per_minute:
+                # Wait until the oldest request is more than 60 seconds old
+                wait_time = 60 - (now - self._request_times[0]) + 1
+                if wait_time > 0:
+                    logger.debug(f"Rate limit reached. Waiting {wait_time:.1f}s...")
+                    await asyncio.sleep(wait_time)
+                    # Clean up again after waiting
+                    now = time.time()
+                    self._request_times = [t for t in self._request_times if now - t < 60]
+
+            self._request_times.append(time.time())
+
     async def get_price(self, asset: str) -> Optional[Dict]:
         """Get current price for an asset."""
+        # Return cached price if fresh (less than 30 seconds old)
+        cached = self.get_cached_price(asset)
+        if cached:
+            return cached
+
         try:
+            await self._wait_for_rate_limit()
             client = await self.get_client()
             symbol = self._get_symbol(asset)
 
@@ -85,6 +115,9 @@ class MarketDataService:
                     self._price_cache[asset] = price_data
                     self._last_update[asset] = datetime.now()
                     return price_data
+                elif "code" in data and data["code"] == 429:
+                    logger.warning(f"Rate limited for {asset}, using cache")
+                    return self._price_cache.get(asset)
 
             logger.warning(f"Failed to get price for {asset}: {response.text}")
             return self._price_cache.get(asset)
@@ -101,6 +134,7 @@ class MarketDataService:
     ) -> Optional[pd.DataFrame]:
         """Get historical time series data."""
         try:
+            await self._wait_for_rate_limit()
             client = await self.get_client()
             symbol = self._get_symbol(asset)
             td_interval = self.TIMEFRAME_MAP.get(interval, "5min")
@@ -129,9 +163,12 @@ class MarketDataService:
                     if "volume" in df.columns:
                         df["volume"] = pd.to_numeric(df["volume"], errors="coerce")
                     else:
-                        df["volume"] = 0
+                        df["volume"] = 0.0
 
                     return df
+                elif "code" in data and data["code"] == 429:
+                    logger.warning(f"Rate limited for {asset} time_series, skipping")
+                    return None
 
             logger.warning(f"Failed to get time series for {asset}: {response.text}")
             return None
@@ -141,17 +178,12 @@ class MarketDataService:
             return None
 
     async def get_multiple_prices(self, assets: List[str]) -> Dict[str, Dict]:
-        """Get prices for multiple assets."""
+        """Get prices for multiple assets with rate limiting."""
         results = {}
-        tasks = [self.get_price(asset) for asset in assets]
-        prices = await asyncio.gather(*tasks, return_exceptions=True)
-
-        for asset, price in zip(assets, prices):
-            if isinstance(price, dict):
+        for asset in assets:
+            price = await self.get_price(asset)
+            if price:
                 results[asset] = price
-            elif isinstance(price, Exception):
-                logger.error(f"Error getting price for {asset}: {price}")
-
         return results
 
     def get_current_session(self) -> str:
@@ -169,7 +201,7 @@ class MarketDataService:
             return "Tokyo"
 
     def get_cached_price(self, asset: str) -> Optional[Dict]:
-        """Get cached price if available and recent."""
+        """Get cached price if available and recent (within 30 seconds)."""
         if asset in self._price_cache:
             last_update = self._last_update.get(asset)
             if last_update and (datetime.now() - last_update).seconds < 30:
