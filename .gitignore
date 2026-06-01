@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+venv/
+.venv/
+env/
+*.egg-info/
+dist/
+build/
+
+# Environment
+.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+logs/*.log
+
+# Excel data (auto-generated)
+excel/*.xlsx
+
+# Reports (auto-generated)
+reports/*.txt
+
+# Config secrets
+config/client_secret.json
+config/token.json
+
+# Node
+frontend/node_modules/
+frontend/build/
+frontend/.cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+.pytest_cache/
+htmlcov/
+.coverage
