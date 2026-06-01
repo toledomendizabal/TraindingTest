@@ -1,24 +1,55 @@
-fastapi==0.104.1
-uvicorn[standard]==0.24.0
-pandas==2.1.4
-numpy==1.26.2
-openpyxl==3.1.2
-ta==0.11.0
-pandas-ta==0.3.14b1
-plotly==5.18.0
-apscheduler==3.10.4
-python-telegram-bot==20.7
-httpx==0.25.2
-websockets==12.0
-sqlalchemy==2.0.23
-aiosqlite==0.19.0
-loguru==0.7.2
-python-dotenv==1.0.0
-google-auth==2.25.2
-google-auth-oauthlib==1.2.0
-google-api-python-client==2.111.0
-pydantic==2.5.3
-pydantic-settings==2.1.0
-jinja2==3.1.2
-python-multipart==0.0.6
-aiofiles==23.2.1
+# ============================================================
+# TradingSignal Pro - Dependencias
+# Compatible con Python 3.11.x, 3.12.x, 3.13.x
+# NOTA: Python 3.14 NO es compatible con pandas aún.
+#       Se recomienda usar Python 3.11.9 o 3.12.x
+# ============================================================
+
+# --- Framework Web ---
+fastapi>=0.104.0,<1.0.0
+uvicorn[standard]>=0.24.0,<1.0.0
+
+# --- Procesamiento de Datos ---
+# IMPORTANTE: En Windows usar binarios precompilados.
+# Si falla la instalación, ejecute:
+#   pip install pandas --only-binary=:all:
+pandas>=2.1.0,<2.3.0
+numpy>=1.26.0,<2.1.0
+openpyxl>=3.1.0,<4.0.0
+
+# --- Análisis Técnico ---
+ta>=0.11.0,<1.0.0
+pandas-ta>=0.3.14b1
+
+# --- Visualización ---
+plotly>=5.18.0,<6.0.0
+
+# --- Scheduler ---
+apscheduler>=3.10.0,<4.0.0
+
+# --- Comunicaciones ---
+python-telegram-bot>=20.7,<22.0
+httpx>=0.25.0,<1.0.0
+websockets>=12.0,<14.0
+
+# --- Base de Datos ---
+sqlalchemy>=2.0.0,<3.0.0
+aiosqlite>=0.19.0,<1.0.0
+
+# --- Logging ---
+loguru>=0.7.0,<1.0.0
+
+# --- Configuración ---
+python-dotenv>=1.0.0,<2.0.0
+pydantic>=2.5.0,<3.0.0
+pydantic-settings>=2.1.0,<3.0.0
+
+# --- Google APIs (OAuth2 + Gmail) ---
+google-auth>=2.25.0,<3.0.0
+google-auth-oauthlib>=1.2.0,<2.0.0
+google-api-python-client>=2.100.0,<3.0.0
+
+# --- Utilidades ---
+jinja2>=3.1.0,<4.0.0
+python-multipart>=0.0.6,<1.0.0
+aiofiles>=23.2.0,<25.0.0
