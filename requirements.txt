@@ -1,8 +1,6 @@
 # ============================================================
 # TradingSignal Pro - Dependencias
-# Compatible con Python 3.11.x, 3.12.x, 3.13.x
-# NOTA: Python 3.14 NO es compatible con pandas aún.
-#       Se recomienda usar Python 3.11.9 o 3.12.x
+# Compatible con Python 3.11.x, 3.12.x, 3.13.x, 3.14.x
 # ============================================================
 
 # --- Framework Web ---
@@ -10,16 +8,15 @@ fastapi>=0.104.0,<1.0.0
 uvicorn[standard]>=0.24.0,<1.0.0
 
 # --- Procesamiento de Datos ---
-# IMPORTANTE: En Windows usar binarios precompilados.
-# Si falla la instalación, ejecute:
-#   pip install pandas --only-binary=:all:
-pandas>=2.1.0,<2.3.0
-numpy>=1.26.0,<2.1.0
+# Para Python 3.14: pandas>=2.2.3 y numpy>=2.1.0 son necesarios
+# Si falla, ejecute: pip install pandas numpy --only-binary=:all:
+pandas>=2.2.3
+numpy>=2.1.0
 openpyxl>=3.1.0,<4.0.0
 
 # --- Análisis Técnico ---
-ta>=0.11.0,<1.0.0
-pandas-ta>=0.3.14b1
+# NOTA: Los indicadores están implementados manualmente en app/services/indicators.py
+# No se requiere pandas-ta ni ta (incompatibles con Python 3.14 por dependencia de numba)
 
 # --- Visualización ---
 plotly>=5.18.0,<6.0.0
