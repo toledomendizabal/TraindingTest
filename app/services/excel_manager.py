@@ -10,12 +10,22 @@ from app.core.config import settings
 
 def _sanitize_value(val):
     """Convert numpy/pandas types to native Python types for JSON serialization."""
-    if val is None or (isinstance(val, float) and np.isnan(val)):
+    # Handle None
+    if val is None:
         return None
+    # Handle pandas NaT (Not a Time)
+    if isinstance(val, type(pd.NaT)):
+        return None
+    # Handle numpy NaN and Inf (must check before isinstance float)
+    if isinstance(val, (float, np.floating)):
+        import math
+        if math.isnan(float(val)) or math.isinf(float(val)):
+            return None
+        if isinstance(val, np.floating):
+            return float(val)
+        return val
     if isinstance(val, (np.integer,)):
         return int(val)
-    if isinstance(val, (np.floating,)):
-        return float(val)
     if isinstance(val, (np.bool_,)):
         return bool(val)
     if isinstance(val, (np.ndarray,)):
@@ -24,6 +34,12 @@ def _sanitize_value(val):
         return val.isoformat()
     if isinstance(val, (np.str_,)):
         return str(val)
+    # Handle any other pandas types that might sneak through
+    try:
+        if pd.isna(val):
+            return None
+    except (TypeError, ValueError):
+        pass
     return val
 
 
