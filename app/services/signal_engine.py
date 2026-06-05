@@ -83,6 +83,14 @@ class SignalEngine:
                     f"SL: {signal.stop_loss} TP1: {signal.take_profit_1} "
                     f"Indicators: {signal.indicators_met}/18"
                 )
+                
+                # Automatically register and notify for all new signals
+                await excel_manager.register_signal(signal)
+                try:
+                    from app.services.telegram_service import telegram_service
+                    await telegram_service.send_signal_notification(signal)
+                except Exception as e:
+                    logger.error(f"Error sending Telegram notification: {e}")
 
             return signal
 
@@ -96,11 +104,10 @@ class SignalEngine:
         active_assets = settings.ACTIVE_ASSETS
 
         for asset in active_assets:
+            # analyze_asset now handles registration and notification
             signal = await self.analyze_asset(asset)
             if signal:
                 signals.append(signal)
-                # Register in Excel
-                await excel_manager.register_signal(signal)
 
         return signals
 

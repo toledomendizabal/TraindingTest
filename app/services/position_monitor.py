@@ -127,16 +127,24 @@ class PositionMonitor:
             f"CLOSING {signal_id}: {status.value} @ {close_price} P/L: {profit_loss:.2f}"
         )
 
+        # Update Signal Engine in-memory state
+        from app.services.signal_engine import signal_engine
+        if signal_id in signal_engine.active_signals:
+            signal_engine.active_signals[signal_id].status = status
+
         # Update Excel
         await excel_manager.update_signal_status(
             signal_id, status.value, close_price, round(profit_loss, 2)
         )
 
         # Send Telegram notification
-        from app.services.telegram_service import telegram_service
-        await telegram_service.send_close_notification(
-            signal_id, status.value, close_price, profit_loss
-        )
+        try:
+            from app.services.telegram_service import telegram_service
+            await telegram_service.send_close_notification(
+                signal_id, status.value, close_price, profit_loss
+            )
+        except Exception as e:
+            logger.error(f"Error sending Telegram notification: {e}")
 
 
 # Singleton instance
