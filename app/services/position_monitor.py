@@ -14,7 +14,7 @@ class PositionMonitor:
 
     def __init__(self):
         self.is_running = False
-        self._monitor_interval = 1  # seconds
+        self._monitor_interval = 30  # seconds (reduced frequency for API compliance)
 
     async def start_monitoring(self):
         """Start the position monitoring loop."""

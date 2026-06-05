@@ -20,13 +20,15 @@ class SchedulerService:
         if self._is_running:
             return
 
-        # Signal analysis every 10 seconds
+        # Signal analysis every 60 seconds (Twelve Data free tier compliance)
         self.scheduler.add_job(
             self._run_signal_analysis,
-            IntervalTrigger(seconds=10),
+            IntervalTrigger(seconds=60),
             id="signal_analysis",
             name="Signal Analysis",
-            replace_existing=True
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True
         )
 
         # Daily test message at 9:00 AM
@@ -56,13 +58,15 @@ class SchedulerService:
             replace_existing=True
         )
 
-        # Excel sync every 30 seconds
+        # Excel sync every 2 minutes
         self.scheduler.add_job(
             self._sync_excel,
-            IntervalTrigger(seconds=30),
+            IntervalTrigger(minutes=2),
             id="excel_sync",
             name="Excel Sync",
-            replace_existing=True
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True
         )
 
         self.scheduler.start()
