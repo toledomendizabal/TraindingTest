@@ -175,15 +175,23 @@ class ExcelManager:
                                     close_price: float = 0, profit_loss: float = 0) -> bool:
         """Update signal status in Excel."""
         try:
+            # Force string type for ID and status columns to avoid dtype conflicts
             df = pd.read_excel(self.signals_file, sheet_name="Signals")
+            
+            # Ensure these columns are treated as objects (strings)
+            for col in ["id", "status", "closed_at", "result"]:
+                if col in df.columns:
+                    df[col] = df[col].astype(object)
 
             mask = df["id"] == signal_id
             if mask.any():
-                df.loc[mask, "status"] = status
-                df.loc[mask, "closed_at"] = datetime.now().isoformat()
-                df.loc[mask, "close_price"] = close_price
-                df.loc[mask, "profit_loss"] = profit_loss
-                df.loc[mask, "result"] = "WIN" if profit_loss > 0 else "LOSS"
+                # Use .at or .loc with explicit conversion to avoid SettingWithCopyWarning or dtype issues
+                idx = df.index[mask][0]
+                df.at[idx, "status"] = str(status)
+                df.at[idx, "closed_at"] = datetime.now().isoformat()
+                df.at[idx, "close_price"] = float(close_price)
+                df.at[idx, "profit_loss"] = float(profit_loss)
+                df.at[idx, "result"] = "WIN" if profit_loss > 0 else "LOSS"
 
                 df.to_excel(self.signals_file, index=False, sheet_name="Signals")
                 logger.bind(module="monitoring").info(
