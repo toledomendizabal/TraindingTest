@@ -56,6 +56,9 @@ class MT4MonitorService:
     async def _read_prices(self):
         """Read prices from CSV file (format: Symbol,Bid,Ask)."""
         try:
+            # Refresh path from settings
+            self.prices_file = os.path.join(settings.MT4_FILES_PATH, "mt4_prices.csv")
+            
             # We use encoding='utf-16' or 'utf-8' depending on how MT4 exports it. 
             # Usually MT4 uses 'utf-16' for Unicode strings in MQL4.
             with open(self.prices_file, mode='r', encoding='utf-8', errors='ignore') as f:
