@@ -95,12 +95,28 @@ if not exist "logs" mkdir logs
 if not exist "excel" mkdir excel
 if not exist "reports" mkdir reports
 if not exist "config" mkdir config
+if not exist "scripts" mkdir scripts
+
+:: MetaTrader Offline Bridge Setup
+echo.
+echo ============================================================
+echo [MT4] CONFIGURACION DE MONITOREO OFFLINE
+echo ============================================================
+echo [INFO] Para usar MetaTrader 4/5 como fuente de precios:
+echo [INFO] 1. Copie 'scripts/PriceExporter.mq4' a su carpeta de Experts de MT4.
+echo [INFO] 2. Compilelo y arrastrelo a CUALQUIER grafico en MT4.
+echo [INFO] 3. Asegurese de permitir 'DLL imports' en la configuracion del EA.
+echo [INFO] 4. El sistema detectara los precios automaticamente cada 1s.
+echo.
+echo [INFO] Iniciando puente de archivos MetaTrader...
+start /min powershell.exe -ExecutionPolicy Bypass -File scripts\mt4_bridge.ps1
+echo ============================================================
 
 echo.
 echo ============================================================
 echo [INFO] Iniciando sistema multi-hilo...
-echo [INFO] - Motor de Senales (cada 10s)
-echo [INFO] - Monitor de Posiciones (cada 1s)
+echo [INFO] - Motor de Senales (cada 60s - Twelve Data Compliance)
+echo [INFO] - Monitor de Posiciones (cada 1s con MT4 / 30s con API)
 echo [INFO] - API FastAPI (puerto 8000)
 echo [INFO] - Programador APScheduler
 echo.
