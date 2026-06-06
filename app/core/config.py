@@ -34,6 +34,10 @@ class Settings(BaseSettings):
     REPORTS_DIR: str = ""
     CONFIG_DIR: str = ""
 
+    # MetaTrader Integration
+    MT4_FILES_PATH: str = "C:\\Users\\USUARIO\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files"
+    MT4_SYNC_ENABLED: bool = True
+
     # Active Assets
     ACTIVE_ASSETS: List[str] = [
         "EURUSD", "GBPUSD", "USDJPY", "USDCHF",

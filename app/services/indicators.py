@@ -62,6 +62,27 @@ class IndicatorService:
         details = []
         current_price = df["close"].iloc[-1]
 
+        # --- Market Phase Filter: Accumulation vs Distribution ---
+        # Using ADX and Bollinger Bands to detect range (accumulation) vs trend (distribution)
+        adx_data = indicators.get("ADX_DMI")
+        bb_data = indicators.get("BOLLINGER_BANDS")
+        
+        is_distribution = False
+        if adx_data and adx_data.get("adx", 0) > 20:
+            is_distribution = True
+            details.append(f"Market Phase: Distribution (ADX={adx_data['adx']:.1f})")
+        elif bb_data:
+            # Check if BB is expanding
+            bb_width = (bb_data.get("upper", 0) - bb_data.get("lower", 0)) / bb_data.get("middle", 1)
+            if bb_width > 0.002: # Threshold for expansion
+                is_distribution = True
+                details.append("Market Phase: Distribution (BB Expansion)")
+        
+        if not is_distribution:
+            details.append("Market Phase: Accumulation (Signal Blocked)")
+            return "NEUTRAL", 0, details
+
+
         # Layer 1: Trend Direction
         # EMA 200
         if "EMA_200" in indicators and indicators["EMA_200"] is not None:

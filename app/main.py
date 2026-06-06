@@ -12,6 +12,7 @@ from app.core.logging_config import setup_logging
 from app.api.router import api_router
 from app.services.scheduler import scheduler_service
 from app.services.position_monitor import position_monitor
+from app.services.mt4_monitor import mt4_monitor
 
 
 @asynccontextmanager
@@ -38,6 +39,10 @@ async def lifespan(app: FastAPI):
     # Start position monitor in background
     asyncio.create_task(position_monitor.start_monitoring())
 
+    # Start MT4 Offline Monitor
+    if settings.MT4_SYNC_ENABLED:
+        await mt4_monitor.start()
+
     logger.info(f"Active assets: {settings.ACTIVE_ASSETS}")
     logger.info(f"Capital: ${settings.INITIAL_CAPITAL}")
     logger.info(f"Risk: {settings.RISK_PERCENTAGE}%")
@@ -49,6 +54,7 @@ async def lifespan(app: FastAPI):
     logger.info("Shutting down TradingSignal Pro...")
     scheduler_service.stop()
     await position_monitor.stop_monitoring()
+    await mt4_monitor.stop()
     from app.services.market_data import market_data_service
     await market_data_service.close()
     logger.info("System shutdown complete")

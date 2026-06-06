@@ -14,7 +14,8 @@ class PositionMonitor:
 
     def __init__(self):
         self.is_running = False
-        self._monitor_interval = 30  # seconds (reduced frequency for API compliance)
+        # If MT4 is enabled, we can monitor every 1 second without hitting API limits
+        self._monitor_interval = 1 if settings.MT4_SYNC_ENABLED else 30
 
     async def start_monitoring(self):
         """Start the position monitoring loop."""
@@ -43,17 +44,22 @@ class PositionMonitor:
 
         # Get current prices for all assets with active signals
         assets = list(set(s["asset"] for s in active_signals))
-        prices = await market_data_service.get_multiple_prices(assets)
-
+        
+        # Try MT4 Offline Monitor first for each asset
+        from app.services.mt4_monitor import mt4_monitor
+        
         for signal_data in active_signals:
             asset = signal_data["asset"]
-            price_data = prices.get(asset)
+            current_price = mt4_monitor.get_price(asset)
+            
+            if current_price is None:
+                # Fallback to market data service (cached or API)
+                price_data = await market_data_service.get_price(asset)
+                if price_data:
+                    current_price = price_data["price"]
 
-            if not price_data:
-                continue
-
-            current_price = price_data["price"]
-            await self._evaluate_position(signal_data, current_price)
+            if current_price is not None:
+                await self._evaluate_position(signal_data, current_price)
 
     async def _evaluate_position(self, signal_data: Dict, current_price: float):
         """Evaluate a single position against current price."""

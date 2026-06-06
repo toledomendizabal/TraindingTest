@@ -158,6 +158,17 @@ class SignalEngine:
 
             # Calculate Stop Loss using ATR (1.5x ATR)
             sl_distance = atr * 1.5
+            
+            # --- Apply Minimum Stop Loss Limits ---
+            # Forex: 6 pips min
+            # Indices/Gold: 300 pips (points) min
+            is_index_or_gold = any(x in asset.upper() for x in ["XAU", "US30", "US100", "US500", "GER40", "DAX", "DJI", "NDX", "SPX"])
+            min_sl_pips = 300 if is_index_or_gold else 6
+            
+            current_sl_pips = sl_distance / pip_size
+            if current_sl_pips < min_sl_pips:
+                sl_distance = min_sl_pips * pip_size
+                logger.bind(module="signals").info(f"{asset}: SL adjusted to minimum ({min_sl_pips} pips)")
 
             if direction == SignalDirection.BUY:
                 stop_loss = entry_price - sl_distance
@@ -172,6 +183,7 @@ class SignalEngine:
 
             # Calculate pips
             sl_pips = abs(entry_price - stop_loss) / pip_size
+
             tp1_pips = abs(tp1 - entry_price) / pip_size
             tp2_pips = abs(tp2 - entry_price) / pip_size
             tp3_pips = abs(tp3 - entry_price) / pip_size
