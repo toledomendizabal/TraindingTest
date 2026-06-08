@@ -22,12 +22,14 @@ def test_sl_limits():
         ("EURUSD", 0.0002, 0.0001, 6),      # Forex: 0.0002 ATR is 2 pips, should be adjusted to 6
         ("XAUUSD", 1.0, 0.01, 300),         # Gold: 1.0 ATR is 100 pips, should be adjusted to 300
         ("US30Cash", 50.0, 1.0, 300),       # Index: 50 ATR is 50 pips, should be adjusted to 300
+        ("GER40Cash", 20.0, 1.0, 20),       # GER40: 20 ATR is 20 pips, should stay 20 (Auto-calculable)
         ("GBPUSD", 0.0020, 0.0001, 20)      # Forex: 0.0020 ATR is 20 pips, should stay 20 ( > 6)
     ]
     
     for asset, atr, pip_size, expected_min in test_cases:
-        is_index_or_gold = any(x in asset.upper() for x in ["XAU", "US30", "US100", "US500", "GER40"])
-        min_sl_pips = 300 if is_index_or_gold else 6
+        is_index_or_gold = any(x in asset.upper() for x in ["XAU", "US30", "US100", "US500"])
+        is_ger40 = "GER40" in asset.upper()
+        min_sl_pips = 300 if (is_index_or_gold and not is_ger40) else 6
         
         sl_distance = atr * 1.5
         current_sl_pips = sl_distance / pip_size

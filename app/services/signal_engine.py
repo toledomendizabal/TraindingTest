@@ -161,9 +161,12 @@ class SignalEngine:
             
             # --- Apply Minimum Stop Loss Limits ---
             # Forex: 6 pips min
-            # Indices/Gold: 300 pips (points) min
-            is_index_or_gold = any(x in asset.upper() for x in ["XAU", "US30", "US100", "US500", "GER40", "DAX", "DJI", "NDX", "SPX"])
-            min_sl_pips = 300 if is_index_or_gold else 6
+            # Indices/Gold: 300 pips (points) min (Except GER40Cash which is auto-calculable)
+            is_index_or_gold = any(x in asset.upper() for x in ["XAU", "US30", "US100", "US500", "DAX", "DJI", "NDX", "SPX"])
+            is_ger40 = "GER40" in asset.upper()
+            
+            min_sl_pips = 300 if (is_index_or_gold and not is_ger40) else 6
+            # Note: If is_ger40, min_sl_pips defaults to 6 (Forex standard) allowing ATR to dictate the distance.
             
             current_sl_pips = sl_distance / pip_size
             if current_sl_pips < min_sl_pips:
