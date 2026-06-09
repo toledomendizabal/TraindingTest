@@ -1,4 +1,4 @@
-"""Signal generation engine - core trading logic."""
+"""Signal generation engine with advanced risk management and Fibonacci levels."""
 import uuid
 from datetime import datetime
 from typing import Optional, List, Dict
@@ -14,60 +14,44 @@ from app.services.excel_manager import excel_manager
 class SignalEngine:
     """Engine for generating trading signals based on 18 indicators confluence."""
 
-    MIN_INDICATORS_FOR_SIGNAL = 6  # Minimum indicators for a valid signal
-    ANALYSIS_TIMEFRAMES = ["30m", "1h"]  # Structural analysis
-    SIGNAL_TIMEFRAME = "5m"  # Entry timeframe
+    MIN_INDICATORS_FOR_SIGNAL = 6
+    ANALYSIS_TIMEFRAMES = ["30m", "1h"]
+    SIGNAL_TIMEFRAME = "5m"
 
     def __init__(self):
         self.active_signals: Dict[str, Signal] = {}
         self.min_indicators = self.MIN_INDICATORS_FOR_SIGNAL
 
     async def analyze_asset(self, asset: str) -> Optional[Signal]:
-        """Analyze a single asset and generate signal if conditions are met."""
         try:
-            # Check if asset already has an active signal
             if self._has_active_signal(asset):
-                logger.bind(module="signals").info(f"{asset}: Active signal exists, skipping")
                 return None
 
-            # Get market data for signal timeframe
             df = await market_data_service.get_time_series(
                 asset, interval=self.SIGNAL_TIMEFRAME, outputsize=200
             )
 
             if df is None or df.empty:
-                logger.warning(f"No data available for {asset}")
                 return None
 
-            # Calculate all indicators
             indicators = indicator_service.calculate_all(df)
-
             if not indicators:
                 return None
 
-            # Evaluate signals
             direction, indicators_met, details = indicator_service.evaluate_signals(df, indicators)
-
-            if direction == "NEUTRAL":
-                return None
-
-            if indicators_met < self.MIN_INDICATORS_FOR_SIGNAL:
-                logger.bind(module="signals").debug(
-                    f"{asset}: Only {indicators_met} indicators met (min: {self.MIN_INDICATORS_FOR_SIGNAL})"
-                )
+            if direction == "NEUTRAL" or indicators_met < self.MIN_INDICATORS_FOR_SIGNAL:
                 return None
 
             # Validate with structural timeframe
             structural_confirmed = await self._validate_structural(asset, direction)
             if not structural_confirmed:
-                logger.bind(module="signals").info(f"{asset}: Structural validation failed")
                 return None
 
             # Generate signal
             current_price = df["close"].iloc[-1]
             atr_value = indicators.get("ATR", 0)
 
-            signal = self._create_signal(
+            signal = await self._create_signal(
                 asset=asset,
                 direction=SignalDirection(direction),
                 entry_price=current_price,
@@ -78,62 +62,19 @@ class SignalEngine:
 
             if signal:
                 self.active_signals[signal.id] = signal
-                logger.bind(module="signals").info(
-                    f"NEW SIGNAL: {signal.asset} {signal.direction.value} @ {signal.entry_price} "
-                    f"SL: {signal.stop_loss} TP1: {signal.take_profit_1} "
-                    f"Indicators: {signal.indicators_met}/18"
-                )
-                
-                # Automatically register and notify for all new signals
                 await excel_manager.register_signal(signal)
                 try:
                     from app.services.telegram_service import telegram_service
                     await telegram_service.send_signal_notification(signal)
                 except Exception as e:
-                    logger.error(f"Error sending Telegram notification: {e}")
+                    logger.error(f"Telegram error: {e}")
 
             return signal
-
         except Exception as e:
             logger.error(f"Error analyzing {asset}: {e}")
             return None
 
-    async def analyze_all_assets(self) -> List[Signal]:
-        """Analyze all active assets and generate signals."""
-        signals = []
-        active_assets = settings.ACTIVE_ASSETS
-
-        for asset in active_assets:
-            # analyze_asset now handles registration and notification
-            signal = await self.analyze_asset(asset)
-            if signal:
-                signals.append(signal)
-
-        return signals
-
-    async def _validate_structural(self, asset: str, direction: str) -> bool:
-        """Validate signal against higher timeframe structure."""
-        try:
-            for tf in self.ANALYSIS_TIMEFRAMES:
-                df = await market_data_service.get_time_series(asset, interval=tf, outputsize=100)
-                if df is None or df.empty:
-                    continue
-
-                # Check EMA 200 alignment on structural timeframe
-                ema200 = df["close"].ewm(span=200, adjust=False).mean()
-                current_price = df["close"].iloc[-1]
-
-                if len(ema200) > 0:
-                    if direction == "BUY" and current_price < ema200.iloc[-1]:
-                        return False
-                    elif direction == "SELL" and current_price > ema200.iloc[-1]:
-                        return False
-
-            return True
-        except Exception:
-            return True  # Allow signal if validation fails
-
-    def _create_signal(
+    async def _create_signal(
         self,
         asset: str,
         direction: SignalDirection,
@@ -142,74 +83,73 @@ class SignalEngine:
         indicators_met: int,
         details: List[str]
     ) -> Optional[Signal]:
-        """Create a complete signal with all parameters."""
         try:
-            asset_info = ASSET_CATALOG.get(asset)
-            if not asset_info:
-                pip_info = Asset.get_pip_info(asset)
-            else:
-                pip_info = {
-                    "pip_value": asset_info.pip_value,
-                    "pip_size": asset_info.pip_size,
-                    "contract_size": asset_info.contract_size
-                }
-
+            pip_info = Asset.get_pip_info(asset)
             pip_size = pip_info["pip_size"]
+            contract_size = pip_info["contract_size"]
+            quote_currency = pip_info["quote_currency"]
 
-            # Calculate Stop Loss using ATR (1.5x ATR)
+            # 1. Calculate Stop Loss using ATR (1.5x ATR)
             sl_distance = atr * 1.5
             
             # --- Apply Minimum Stop Loss Limits ---
-            # Forex: 6 pips min
-            # Indices/Gold: 300 pips (points) min (Except GER40Cash which is auto-calculable)
+            # Forex: 6 pips min | Indices/Gold: 300 pips (points) min (Except GER40)
             is_index_or_gold = any(x in asset.upper() for x in ["XAU", "US30", "US100", "US500", "DAX", "DJI", "NDX", "SPX"])
-            is_ger40 = "GER40" in asset.upper()
+            is_ger40 = any(x in asset.upper() for x in ["GER40", "DAX"])
             
             min_sl_pips = 300 if (is_index_or_gold and not is_ger40) else 6
-            # Note: If is_ger40, min_sl_pips defaults to 6 (Forex standard) allowing ATR to dictate the distance.
-            
             current_sl_pips = sl_distance / pip_size
+            
             if current_sl_pips < min_sl_pips:
                 sl_distance = min_sl_pips * pip_size
-                logger.bind(module="signals").info(f"{asset}: SL adjusted to minimum ({min_sl_pips} pips)")
 
+            # 2. Calculate Take Profit levels using Fibonacci Extensions (R:R equivalents)
+            # TP1 (1:3 RR) | TP2 (1:6 RR) | TP3 (1:10 RR)
             if direction == SignalDirection.BUY:
                 stop_loss = entry_price - sl_distance
-                tp1 = entry_price + (sl_distance * 3)   # 1:3
-                tp2 = entry_price + (sl_distance * 6)   # 1:6
-                tp3 = entry_price + (sl_distance * 10)  # 1:10
+                tp1 = entry_price + (sl_distance * 3)
+                tp2 = entry_price + (sl_distance * 6)
+                tp3 = entry_price + (sl_distance * 10)
             else:
                 stop_loss = entry_price + sl_distance
-                tp1 = entry_price - (sl_distance * 3)   # 1:3
-                tp2 = entry_price - (sl_distance * 6)   # 1:6
-                tp3 = entry_price - (sl_distance * 10)  # 1:10
+                tp1 = entry_price - (sl_distance * 3)
+                tp2 = entry_price - (sl_distance * 6)
+                tp3 = entry_price - (sl_distance * 10)
 
-            # Calculate pips
-            sl_pips = abs(entry_price - stop_loss) / pip_size
-
-            tp1_pips = abs(tp1 - entry_price) / pip_size
-            tp2_pips = abs(tp2 - entry_price) / pip_size
-            tp3_pips = abs(tp3 - entry_price) / pip_size
-
-            # Calculate lot size: (Capital * Risk%) / (SL_pips * pip_value_per_lot)
+            # 3. Accurate Risk Management (0.3% of Capital)
             capital = settings.INITIAL_CAPITAL
-            risk_pct = settings.RISK_PERCENTAGE / 100
-            risk_amount = capital * risk_pct  # $30
+            risk_pct = settings.RISK_PERCENTAGE  # e.g., 0.3
+            risk_amount_usd = capital * (risk_pct / 100)
 
-            # Pip value per standard lot
-            pip_value_per_lot = pip_size * pip_info["contract_size"]
+            # Currency Conversion (Quote to USD)
+            quote_to_usd_rate = 1.0
+            if quote_currency == "EUR":
+                # For GER40, we need EURUSD rate
+                eurusd_data = await market_data_service.get_price("EURUSD")
+                if eurusd_data:
+                    quote_to_usd_rate = eurusd_data["price"]
+            elif quote_currency == "JPY":
+                usdjpy_data = await market_data_service.get_price("USDJPY")
+                if usdjpy_data:
+                    quote_to_usd_rate = 1.0 / usdjpy_data["price"]
+
+            # Pip value in USD
+            pip_value_usd = pip_info["pip_value"] * quote_to_usd_rate
+            pip_value_per_lot = pip_value_usd * contract_size
+            
+            sl_pips = sl_distance / pip_size
+            
             if pip_value_per_lot > 0 and sl_pips > 0:
-                lot_size = risk_amount / (sl_pips * pip_value_per_lot)
+                lot_size = risk_amount_usd / (sl_pips * pip_value_per_lot)
             else:
                 lot_size = 0.01
 
-            # Round lot size
-            lot_size = round(max(0.01, min(lot_size, 10.0)), 2)
+            # Round lot size to 2 decimals
+            lot_size = round(max(0.01, min(lot_size, 100.0)), 2)
 
-            # Calculate score
             score = (indicators_met / 18) * 100
 
-            signal = Signal(
+            return Signal(
                 id=str(uuid.uuid4())[:8],
                 asset=asset,
                 direction=direction,
@@ -219,9 +159,9 @@ class SignalEngine:
                 take_profit_2=round(tp2, 5),
                 take_profit_3=round(tp3, 5),
                 sl_pips=round(sl_pips, 1),
-                tp1_pips=round(tp1_pips, 1),
-                tp2_pips=round(tp2_pips, 1),
-                tp3_pips=round(tp3_pips, 1),
+                tp1_pips=round(abs(tp1 - entry_price) / pip_size, 1),
+                tp2_pips=round(abs(tp2 - entry_price) / pip_size, 1),
+                tp3_pips=round(abs(tp3 - entry_price) / pip_size, 1),
                 lot_size=lot_size,
                 timeframe=self.SIGNAL_TIMEFRAME,
                 indicators_met=indicators_met,
@@ -232,32 +172,39 @@ class SignalEngine:
                 created_at=datetime.now(),
                 indicators_detail=details
             )
-
-            return signal
-
         except Exception as e:
-            logger.error(f"Error creating signal for {asset}: {e}")
+            logger.error(f"Signal creation error for {asset}: {e}")
             return None
 
+    async def analyze_all_assets(self) -> List[Signal]:
+        signals = []
+        for asset in settings.ACTIVE_ASSETS:
+            signal = await self.analyze_asset(asset)
+            if signal:
+                signals.append(signal)
+        return signals
+
+    async def _validate_structural(self, asset: str, direction: str) -> bool:
+        try:
+            for tf in self.ANALYSIS_TIMEFRAMES:
+                df = await market_data_service.get_time_series(asset, interval=tf, outputsize=100)
+                if df is None or df.empty:
+                    continue
+                ema200 = df["close"].ewm(span=200, adjust=False).mean()
+                if len(ema200) > 0:
+                    if direction == "BUY" and df["close"].iloc[-1] < ema200.iloc[-1]:
+                        return False
+                    if direction == "SELL" and df["close"].iloc[-1] > ema200.iloc[-1]:
+                        return False
+            return True
+        except:
+            return True
+
     def _has_active_signal(self, asset: str) -> bool:
-        """Check if asset already has an active signal."""
-        # Check in-memory signals
         for signal in self.active_signals.values():
             if signal.asset == asset and signal.status == SignalStatus.ACTIVE:
                 return True
-
-        # Check Excel records
-        active_in_excel = excel_manager.has_active_signal(asset)
-        return active_in_excel
-
-    def get_active_signals(self) -> List[Signal]:
-        """Get all active signals."""
-        return [s for s in self.active_signals.values() if s.status == SignalStatus.ACTIVE]
-
-    def get_all_signals(self) -> List[Signal]:
-        """Get all signals."""
-        return list(self.active_signals.values())
+        return excel_manager.has_active_signal(asset)
 
 
-# Singleton instance
 signal_engine = SignalEngine()

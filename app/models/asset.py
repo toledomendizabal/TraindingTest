@@ -23,18 +23,32 @@ class Asset(BaseModel):
     @classmethod
     def get_pip_info(cls, symbol: str) -> dict:
         """Get pip value and size for a given symbol."""
-        # JPY pairs
-        if "JPY" in symbol:
-            return {"pip_value": 0.01, "pip_size": 0.01, "contract_size": 100000.0}
-        # Gold
-        elif symbol in ["XAUUSD", "GOLD"]:
-            return {"pip_value": 0.01, "pip_size": 0.01, "contract_size": 100.0}
-        # Indices
-        elif "Cash" in symbol or symbol in ["US30", "US100", "US500", "GER40"]:
-            return {"pip_value": 1.0, "pip_size": 1.0, "contract_size": 1.0}
-        # Standard forex
+        symbol_upper = symbol.upper().replace("/", "")
+        
+        # JPY pairs: Pip is 2nd decimal (0.01)
+        if "JPY" in symbol_upper:
+            return {"pip_value": 0.01, "pip_size": 0.01, "contract_size": 100000.0, "quote_currency": "JPY"}
+        
+        # Gold (XAUUSD): Pip is 2nd decimal (0.01). 1.00 movement = 100 pips.
+        elif any(x in symbol_upper for x in ["XAU", "GOLD"]):
+            return {"pip_value": 0.01, "pip_size": 0.01, "contract_size": 100.0, "quote_currency": "USD"}
+            
+        # Silver (XAGUSD): Pip is 3rd decimal (0.001).
+        elif any(x in symbol_upper for x in ["XAG", "SILVER"]):
+            return {"pip_value": 0.001, "pip_size": 0.001, "contract_size": 5000.0, "quote_currency": "USD"}
+            
+        # Indices (US30, US100, US500, GER40): Pip = Point = 1.0
+        elif any(x in symbol_upper for x in ["US30", "US100", "US500", "DJI", "NAS", "SPX"]):
+            return {"pip_value": 1.0, "pip_size": 1.0, "contract_size": 1.0, "quote_currency": "USD"}
+            
+        # GER40 (DAX): Quote currency is EUR
+        elif any(x in symbol_upper for x in ["GER40", "DAX"]):
+            return {"pip_value": 1.0, "pip_size": 1.0, "contract_size": 1.0, "quote_currency": "EUR"}
+            
+        # Standard forex: Pip is 4th decimal (0.0001)
         else:
-            return {"pip_value": 0.0001, "pip_size": 0.0001, "contract_size": 100000.0}
+            quote = symbol_upper[-3:] if len(symbol_upper) >= 6 else "USD"
+            return {"pip_value": 0.0001, "pip_size": 0.0001, "contract_size": 100000.0, "quote_currency": quote}
 
 
 # Predefined asset catalog

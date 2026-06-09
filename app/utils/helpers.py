@@ -4,20 +4,29 @@ from typing import Dict
 
 
 def calculate_lot_size(capital: float, risk_pct: float, sl_pips: float,
-                       pip_value: float, contract_size: float) -> float:
+                       pip_value: float, contract_size: float, 
+                       quote_to_base_rate: float = 1.0) -> float:
     """
     Calculate position lot size based on risk management.
-
-    Formula: Lot Size = (Capital * Risk%) / (SL_pips * Pip_Value_Per_Lot)
+    
+    quote_to_base_rate: Exchange rate to convert quote currency to account currency (USD).
+    Example for GER40 (EUR): rate would be EURUSD price.
+    Example for USD pairs: rate is 1.0.
     """
     risk_amount = capital * (risk_pct / 100)
-    pip_value_per_lot = pip_value * contract_size
+    
+    # Pip value in account currency (USD)
+    # If quote is EUR and account is USD, pip_value_usd = pip_value_eur * EURUSD
+    pip_value_usd = pip_value * quote_to_base_rate
+    pip_value_per_lot = pip_value_usd * contract_size
 
     if pip_value_per_lot <= 0 or sl_pips <= 0:
         return 0.01
 
     lot_size = risk_amount / (sl_pips * pip_value_per_lot)
-    return round(max(0.01, min(lot_size, 10.0)), 2)
+    
+    # Round to 2 decimals for standard MT4/MT5 lots
+    return round(max(0.01, min(lot_size, 100.0)), 2)
 
 
 def calculate_pips(price1: float, price2: float, pip_size: float) -> float:
