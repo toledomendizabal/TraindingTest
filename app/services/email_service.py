@@ -35,19 +35,31 @@ class EmailService:
             if os.path.exists(token_path):
                 self.credentials = Credentials.from_authorized_user_file(token_path, self.SCOPES)
 
-            if not self.credentials or not self.credentials.valid:
-                if self.credentials and self.credentials.expired and self.credentials.refresh_token:
+            # Use credentials if valid, or try to refresh them
+            if self.credentials and self.credentials.expired and self.credentials.refresh_token:
+                try:
                     self.credentials.refresh(Request())
-                elif os.path.exists(client_secret_path):
+                    with open(token_path, "w") as token:
+                        token.write(self.credentials.to_json())
+                    logger.info("Gmail token refreshed successfully")
+                except Exception as e:
+                    logger.error(f"Failed to refresh Gmail token: {e}")
+                    self.credentials = None
+
+            # Only run local server if no valid credentials exist
+            if not self.credentials or not self.credentials.valid:
+                if os.path.exists(client_secret_path):
+                    logger.info("Starting Gmail OAuth flow...")
                     flow = InstalledAppFlow.from_client_secrets_file(
                         client_secret_path, self.SCOPES
                     )
                     self.credentials = flow.run_local_server(port=0)
-
-                # Save token
-                if self.credentials:
-                    with open(token_path, "w") as token:
-                        token.write(self.credentials.to_json())
+                    # Save token
+                    if self.credentials:
+                        with open(token_path, "w") as token:
+                            token.write(self.credentials.to_json())
+                else:
+                    logger.warning("client_secret.json not found. Gmail authentication skipped.")
 
             if self.credentials:
                 self.service = build("gmail", "v1", credentials=self.credentials)

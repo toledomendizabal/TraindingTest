@@ -49,10 +49,10 @@ class SchedulerService:
             replace_existing=True
         )
 
-        # Weekly backtesting on Friday at 23:00
+        # Weekly backtesting on Friday at 4:00 PM (16:00)
         self.scheduler.add_job(
             self._run_weekly_backtest,
-            CronTrigger(day_of_week="fri", hour=23, minute=0),
+            CronTrigger(day_of_week="fri", hour=16, minute=0),
             id="weekly_backtest",
             name="Weekly Backtesting",
             replace_existing=True

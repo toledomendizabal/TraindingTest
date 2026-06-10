@@ -20,6 +20,11 @@ class PositionMonitor:
     async def start_monitoring(self):
         self.is_running = True
         logger.bind(module="monitoring").info("Position monitor started")
+        
+        # 1. Retroactive verification on startup
+        await self.verify_retroactive_signals()
+        
+        # 2. Continuous monitoring
         while self.is_running:
             try:
                 await self._check_positions()
@@ -27,6 +32,82 @@ class PositionMonitor:
             except Exception as e:
                 logger.error(f"Error in position monitor: {e}")
                 await asyncio.sleep(5)
+
+    async def verify_retroactive_signals(self):
+        """Verify if active signals hit TP/SL while the system was offline."""
+        logger.bind(module="monitoring").info("Starting retroactive verification...")
+        from app.services.signal_engine import signal_engine
+        active_signals = signal_engine.get_active_signals()
+        
+        if not active_signals:
+            return
+
+        for signal in active_signals:
+            try:
+                # Get historical data since signal creation
+                # We fetch the last 500 candles to cover the offline period
+                df = await market_data_service.get_time_series(signal.asset, interval="1m", outputsize=500)
+                if df is None or df.empty:
+                    continue
+                
+                # Filter data to only include candles AFTER signal creation
+                df = df[df["datetime"] >= signal.created_at]
+                if df.empty:
+                    continue
+                
+                # Check each candle for TP/SL hits
+                for _, row in df.iterrows():
+                    high = float(row["high"])
+                    low = float(row["low"])
+                    
+                    hit_status = None
+                    exit_price = None
+                    
+                    if signal.direction.value == "BUY":
+                        if low <= signal.stop_loss:
+                            hit_status = SignalStatus.CLOSED_SL
+                            exit_price = signal.stop_loss
+                        elif high >= signal.take_profit_3:
+                            hit_status = SignalStatus.CLOSED_TP3
+                            exit_price = signal.take_profit_3
+                        elif high >= signal.take_profit_2:
+                            hit_status = SignalStatus.CLOSED_TP2
+                            exit_price = signal.take_profit_2
+                        elif high >= signal.take_profit_1:
+                            hit_status = SignalStatus.CLOSED_TP1
+                            exit_price = signal.take_profit_1
+                    else: # SELL
+                        if high >= signal.stop_loss:
+                            hit_status = SignalStatus.CLOSED_SL
+                            exit_price = signal.stop_loss
+                        elif low <= signal.take_profit_3:
+                            hit_status = SignalStatus.CLOSED_TP3
+                            exit_price = signal.take_profit_3
+                        elif low <= signal.take_profit_2:
+                            hit_status = SignalStatus.CLOSED_TP2
+                            exit_price = signal.take_profit_2
+                        elif low <= signal.take_profit_1:
+                            hit_status = SignalStatus.CLOSED_TP1
+                            exit_price = signal.take_profit_1
+                            
+                    if hit_status:
+                        logger.bind(module="monitoring").info(
+                            f"Retroactive hit detected for {signal.asset} ({signal.id}): {hit_status.value} at {row['datetime']}"
+                        )
+                        # Calculate P/L
+                        pip_info = Asset.get_pip_info(signal.asset)
+                        price_diff = (exit_price - signal.entry_price) if signal.direction.value == "BUY" else (signal.entry_price - exit_price)
+                        
+                        # Use simple conversion for retroactive (or fetch current)
+                        profit_loss = price_diff * signal.lot_size * pip_info["contract_size"]
+                        
+                        await self._close_position(signal.id, hit_status, exit_price, profit_loss)
+                        break # Signal closed, move to next
+                        
+            except Exception as e:
+                logger.error(f"Error in retroactive verification for {signal.id}: {e}")
+        
+        logger.bind(module="monitoring").info("Retroactive verification completed.")
 
     async def stop_monitoring(self):
         self.is_running = False
