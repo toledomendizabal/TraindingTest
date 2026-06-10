@@ -32,28 +32,29 @@ class PositionMonitor:
         self.is_running = False
 
     async def _check_positions(self):
-        active_signals = excel_manager.get_active_signals()
+        from app.services.signal_engine import signal_engine
+        active_signals = signal_engine.get_active_signals()
+        
         if not active_signals:
             return
 
-        for signal_data in active_signals:
-            asset = signal_data["asset"]
-            # Prioritize MT4
+        for signal in active_signals:
+            asset = signal.asset
             price_data = await market_data_service.get_price(asset)
             if price_data and "price" in price_data:
-                await self._evaluate_position(signal_data, price_data["price"])
+                await self._evaluate_position(signal, price_data["price"])
 
-    async def _evaluate_position(self, signal_data: Dict, current_price: float):
+    async def _evaluate_position(self, signal, current_price: float):
         try:
-            signal_id = signal_data["id"]
-            asset = signal_data["asset"]
-            direction = signal_data["direction"]
-            entry_price = float(signal_data["entry_price"])
-            stop_loss = float(signal_data["stop_loss"])
-            tp1 = float(signal_data["take_profit_1"])
-            tp2 = float(signal_data["take_profit_2"])
-            tp3 = float(signal_data["take_profit_3"])
-            lot_size = float(signal_data["lot_size"])
+            signal_id = signal.id
+            asset = signal.asset
+            direction = signal.direction.value
+            entry_price = signal.entry_price
+            stop_loss = signal.stop_loss
+            tp1 = signal.take_profit_1
+            tp2 = signal.take_profit_2
+            tp3 = signal.take_profit_3
+            lot_size = signal.lot_size
 
             pip_info = Asset.get_pip_info(asset)
             contract_size = pip_info["contract_size"]
@@ -118,7 +119,10 @@ class PositionMonitor:
 
         from app.services.signal_engine import signal_engine
         if signal_id in signal_engine.active_signals:
+            # Update status in memory
             signal_engine.active_signals[signal_id].status = status
+            # Important: We keep it in active_signals for a moment to ensure UI/Excel update,
+            # but it will be filtered out by get_active_signals() since its status is no longer ACTIVE.
 
         await excel_manager.update_signal_status(
             signal_id, status.value, close_price, round(profit_loss, 2)

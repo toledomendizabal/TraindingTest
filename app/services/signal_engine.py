@@ -21,6 +21,46 @@ class SignalEngine:
     def __init__(self):
         self.active_signals: Dict[str, Signal] = {}
         self.min_indicators = self.MIN_INDICATORS_FOR_SIGNAL
+        self._load_active_signals()
+
+    def _load_active_signals(self):
+        """Load active signals from Excel on startup."""
+        try:
+            active_list = excel_manager.get_active_signals()
+            for s_data in active_list:
+                try:
+                    # Convert dict to Signal model
+                    signal = Signal(
+                        id=s_data["id"],
+                        asset=s_data["asset"],
+                        direction=SignalDirection(s_data["direction"]),
+                        entry_price=float(s_data["entry_price"]),
+                        stop_loss=float(s_data["stop_loss"]),
+                        take_profit_1=float(s_data["take_profit_1"]),
+                        take_profit_2=float(s_data["take_profit_2"]),
+                        take_profit_3=float(s_data["take_profit_3"]),
+                        sl_pips=float(s_data["sl_pips"]),
+                        tp1_pips=float(s_data["tp1_pips"]),
+                        tp2_pips=float(s_data["tp2_pips"]),
+                        tp3_pips=float(s_data["tp3_pips"]),
+                        lot_size=float(s_data["lot_size"]),
+                        timeframe=s_data["timeframe"],
+                        indicators_met=int(s_data["indicators_met"]),
+                        total_indicators=18,
+                        score=float(s_data["score"]),
+                        status=SignalStatus.ACTIVE,
+                        session=s_data["session"],
+                        created_at=datetime.fromisoformat(s_data["created_at"]) if s_data["created_at"] else datetime.now(),
+                        indicators_detail=[]
+                    )
+                    self.active_signals[signal.id] = signal
+                except Exception as e:
+                    logger.error(f"Error parsing signal {s_data.get('id')}: {e}")
+            
+            if self.active_signals:
+                logger.info(f"Loaded {len(self.active_signals)} active signals from Excel")
+        except Exception as e:
+            logger.error(f"Error loading active signals: {e}")
 
     async def analyze_asset(self, asset: str) -> Optional[Signal]:
         try:
