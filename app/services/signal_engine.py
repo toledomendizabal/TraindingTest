@@ -246,5 +246,9 @@ class SignalEngine:
                 return True
         return excel_manager.has_active_signal(asset)
 
+    def get_active_signals(self) -> List[Signal]:
+        """Get all active signals from memory."""
+        return [s for s in self.active_signals.values() if s.status == SignalStatus.ACTIVE]
+
 
 signal_engine = SignalEngine()
