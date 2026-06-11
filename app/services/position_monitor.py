@@ -35,25 +35,38 @@ class PositionMonitor:
 
     async def verify_retroactive_signals(self):
         """Verify if active signals hit TP/SL while the system was offline."""
-        logger.bind(module="monitoring").info("Starting retroactive verification...")
+        logger.bind(module="monitoring").info("Starting retroactive verification (Night-Watch)...")
         from app.services.signal_engine import signal_engine
         active_signals = signal_engine.get_active_signals()
         
         if not active_signals:
+            logger.bind(module="monitoring").info("No active signals to verify.")
             return
 
         for signal in active_signals:
             try:
-                # Get historical data since signal creation
-                # We fetch the last 500 candles to cover the offline period
-                df = await market_data_service.get_time_series(signal.asset, interval="1m", outputsize=500)
+                logger.bind(module="monitoring").info(f"Checking history for {signal.asset} ({signal.id}) since {signal.created_at}")
+                
+                # Fetch up to 2000 M1 candles to cover up to 33 hours of offline time
+                df = await market_data_service.get_time_series(signal.asset, interval="1m", outputsize=2000)
+                
                 if df is None or df.empty:
+                    logger.bind(module="monitoring").warning(f"Could not fetch history for {signal.asset}. Retrying with backup...")
                     continue
                 
+                # Ensure datetime is comparable
+                if not isinstance(df["datetime"].iloc[0], datetime):
+                    df["datetime"] = pd.to_datetime(df["datetime"])
+                
                 # Filter data to only include candles AFTER signal creation
-                df = df[df["datetime"] >= signal.created_at]
+                # Add a small buffer of 1 minute to avoid entry candle
+                df = df[df["datetime"] > signal.created_at]
+                
                 if df.empty:
+                    logger.bind(module="monitoring").info(f"No new candles found for {signal.asset} since creation.")
                     continue
+
+                logger.bind(module="monitoring").info(f"Analyzing {len(df)} candles for {signal.asset}...")
                 
                 # Check each candle for TP/SL hits
                 for _, row in df.iterrows():
@@ -117,13 +130,20 @@ class PositionMonitor:
         active_signals = signal_engine.get_active_signals()
         
         if not active_signals:
+            # Occasionally check if Excel has signals that memory missed (safety net)
+            if datetime.now().minute % 15 == 0: # Every 15 mins
+                signal_engine._load_active_signals()
             return
 
         for signal in active_signals:
             asset = signal.asset
+            # Try MT4 first (Offline)
             price_data = await market_data_service.get_price(asset)
+            
             if price_data and "price" in price_data:
                 await self._evaluate_position(signal, price_data["price"])
+            else:
+                logger.bind(module="monitoring").warning(f"No price data available for {asset} during monitoring.")
 
     async def _evaluate_position(self, signal, current_price: float):
         try:
