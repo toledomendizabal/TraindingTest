@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createChart } from 'lightweight-charts';
-import api from '../services/api';
+import { api } from '../services/api';
 
 const ChartPage = () => {
     const chartContainerRef = useRef();
