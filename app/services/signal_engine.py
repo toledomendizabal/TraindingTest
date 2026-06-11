@@ -14,7 +14,7 @@ from app.services.excel_manager import excel_manager
 class SignalEngine:
     """Engine for generating trading signals based on 18 indicators confluence."""
 
-    MIN_INDICATORS_FOR_SIGNAL = 6
+    MIN_INDICATORS_FOR_SIGNAL = 8
     ANALYSIS_TIMEFRAMES = ["30m", "1h"]
     SIGNAL_TIMEFRAME = "5m"
 
@@ -90,6 +90,12 @@ class SignalEngine:
             # Generate signal
             current_price = df["close"].iloc[-1]
             atr_value = indicators.get("ATR", 0)
+            
+            # Get current spread
+            price_data = await market_data_service.get_price(asset)
+            spread = 0.0
+            if price_data and "ask" in price_data and "bid" in price_data:
+                spread = abs(price_data["ask"] - price_data["bid"])
 
             signal = await self._create_signal(
                 asset=asset,
@@ -97,7 +103,8 @@ class SignalEngine:
                 entry_price=current_price,
                 atr=atr_value if atr_value else current_price * 0.001,
                 indicators_met=indicators_met,
-                details=details
+                details=details,
+                spread=spread
             )
 
             if signal:
@@ -121,7 +128,8 @@ class SignalEngine:
         entry_price: float,
         atr: float,
         indicators_met: int,
-        details: List[str]
+        details: List[str],
+        spread: float = 0.0
     ) -> Optional[Signal]:
         try:
             pip_info = Asset.get_pip_info(asset)
@@ -133,9 +141,9 @@ class SignalEngine:
             sl_distance = atr * 1.5
             
             # --- Apply Minimum Stop Loss Limits ---
-            # Forex: 6 pips min | Indices/Gold: 300 pips (points) min (Except GER40)
             is_index_or_gold = any(x in asset.upper() for x in ["XAU", "US30", "US100", "US500", "DAX", "DJI", "NDX", "SPX"])
             is_ger40 = any(x in asset.upper() for x in ["GER40", "DAX"])
+            is_gold = "XAU" in asset.upper()
             
             min_sl_pips = 300 if (is_index_or_gold and not is_ger40) else 6
             current_sl_pips = sl_distance / pip_size
@@ -144,7 +152,6 @@ class SignalEngine:
                 sl_distance = min_sl_pips * pip_size
 
             # 2. Calculate Take Profit levels using Fibonacci Extensions (R:R equivalents)
-            # TP1 (1:3 RR) | TP2 (1:6 RR) | TP3 (1:10 RR)
             if direction == SignalDirection.BUY:
                 stop_loss = entry_price - sl_distance
                 tp1 = entry_price + (sl_distance * 3)
@@ -156,9 +163,10 @@ class SignalEngine:
                 tp2 = entry_price - (sl_distance * 6)
                 tp3 = entry_price - (sl_distance * 10)
 
-            # 3. Accurate Risk Management (0.3% of Capital)
+            # 3. Accurate Risk Management
             capital = settings.INITIAL_CAPITAL
-            risk_pct = settings.RISK_PERCENTAGE  # e.g., 0.3
+            # Special risk for Gold: 0.75%, others 0.3%
+            risk_pct = 0.75 if is_gold else settings.RISK_PERCENTAGE
             risk_amount_usd = capital * (risk_pct / 100)
 
             # Currency Conversion (Quote to USD)
@@ -210,6 +218,9 @@ class SignalEngine:
                 status=SignalStatus.ACTIVE,
                 session=market_data_service.get_current_session(),
                 created_at=datetime.now(),
+                entry_hour=datetime.now().strftime("%H:%M"),
+                entry_spread=round(spread / pip_size, 1),
+                entry_atr=round(atr / pip_size, 1),
                 indicators_detail=details
             )
         except Exception as e:
@@ -226,6 +237,41 @@ class SignalEngine:
 
     async def _validate_structural(self, asset: str, direction: str) -> bool:
         try:
+            # Special Strategy for XAUUSD
+            if "XAU" in asset.upper():
+                df_5m = await market_data_service.get_time_series(asset, interval="5m", outputsize=300)
+                if df_5m is not None and not df_5m.empty:
+                    # 1. EMA 50 > EMA 200
+                    ema50 = df_5m["close"].ewm(span=50, adjust=False).mean()
+                    ema200 = df_5m["close"].ewm(span=200, adjust=False).mean()
+                    
+                    if direction == "BUY" and ema50.iloc[-1] <= ema200.iloc[-1]:
+                        return False
+                    if direction == "SELL" and ema50.iloc[-1] >= ema200.iloc[-1]:
+                        return False
+                    
+                    # 2. ADX > 25 (Trend strength)
+                    # Simple ADX calculation or from indicators service
+                    from app.services.indicators import indicator_service
+                    ind = indicator_service.calculate_all(df_5m)
+                    if ind.get("ADX", 0) <= 25:
+                        return False
+                    
+                    # 3. MACD aligned
+                    macd = ind.get("MACD", 0)
+                    signal_macd = ind.get("MACD_Signal", 0)
+                    if direction == "BUY" and macd <= signal_macd:
+                        return False
+                    if direction == "SELL" and macd >= signal_macd:
+                        return False
+                    
+                    # 4. ATR increasing (Volatilidad creciente)
+                    atr = df_5m["high"] - df_5m["low"] # simplified
+                    atr_sma = atr.rolling(window=14).mean()
+                    if atr_sma.iloc[-1] <= atr_sma.iloc[-2]:
+                        return False
+
+            # General structural validation
             for tf in self.ANALYSIS_TIMEFRAMES:
                 df = await market_data_service.get_time_series(asset, interval=tf, outputsize=100)
                 if df is None or df.empty:

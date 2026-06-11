@@ -44,6 +44,14 @@ class Signal(BaseModel):
     closed_at: Optional[datetime] = None
     profit_loss: float = 0.0
     close_price: Optional[float] = None
+    # New institutional metrics
+    max_drawdown: float = 0.0
+    risk_reward_ratio: float = 0.0
+    duration_minutes: float = 0.0
+    entry_hour: Optional[str] = None
+    exit_hour: Optional[str] = None
+    entry_spread: float = 0.0
+    entry_atr: float = 0.0
     indicators_detail: List[str] = []
 
     class Config:

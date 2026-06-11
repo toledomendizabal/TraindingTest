@@ -82,7 +82,9 @@ class ExcelManager:
             "sl_pips", "tp1_pips", "tp2_pips", "tp3_pips",
             "lot_size", "timeframe", "indicators_met", "score",
             "status", "session", "created_at", "closed_at",
-            "close_price", "profit_loss", "result"
+            "close_price", "profit_loss", "result",
+            "max_drawdown", "risk_reward_ratio", "duration_minutes",
+            "entry_hour", "exit_hour", "entry_spread", "entry_atr"
         ]
         df = pd.DataFrame(columns=columns)
         df.to_excel(self.signals_file, index=False, sheet_name="Signals")
@@ -159,7 +161,14 @@ class ExcelManager:
                 "closed_at": "",
                 "close_price": "",
                 "profit_loss": 0,
-                "result": ""
+                "result": "",
+                "max_drawdown": 0.0,
+                "risk_reward_ratio": 0.0,
+                "duration_minutes": 0.0,
+                "entry_hour": signal.entry_hour,
+                "exit_hour": "",
+                "entry_spread": signal.entry_spread,
+                "entry_atr": signal.entry_atr
             }
 
             df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
@@ -179,7 +188,7 @@ class ExcelManager:
             
             # FORCE ALL COLUMN TYPES to avoid dtype conflicts
             # Strings
-            for col in ["id", "asset", "direction", "timeframe", "status", "session", "created_at", "closed_at", "result"]:
+            for col in ["id", "asset", "direction", "timeframe", "status", "session", "created_at", "closed_at", "result", "entry_hour", "exit_hour"]:
                 if col in df.columns:
                     df[col] = df[col].astype(str).replace("nan", "")
             
@@ -187,7 +196,8 @@ class ExcelManager:
             float_cols = [
                 "entry_price", "stop_loss", "take_profit_1", "take_profit_2", "take_profit_3",
                 "sl_pips", "tp1_pips", "tp2_pips", "tp3_pips", "lot_size", "score",
-                "close_price", "profit_loss"
+                "close_price", "profit_loss", "max_drawdown", "risk_reward_ratio", "duration_minutes",
+                "entry_spread", "entry_atr"
             ]
             for col in float_cols:
                 if col in df.columns:
@@ -196,11 +206,20 @@ class ExcelManager:
             mask = df["id"] == str(signal_id)
             if mask.any():
                 idx = df.index[mask][0]
+                from app.services.signal_engine import signal_engine
+                sig_obj = signal_engine.active_signals.get(signal_id)
+                
                 df.at[idx, "status"] = str(status)
                 df.at[idx, "closed_at"] = datetime.now().isoformat()
                 df.at[idx, "close_price"] = float(close_price)
                 df.at[idx, "profit_loss"] = float(profit_loss)
                 df.at[idx, "result"] = "WIN" if profit_loss > 0 else "LOSS"
+                
+                if sig_obj:
+                    df.at[idx, "max_drawdown"] = float(sig_obj.max_drawdown)
+                    df.at[idx, "risk_reward_ratio"] = float(sig_obj.risk_reward_ratio)
+                    df.at[idx, "duration_minutes"] = float(sig_obj.duration_minutes)
+                    df.at[idx, "exit_hour"] = str(sig_obj.exit_hour)
 
                 df.to_excel(self.signals_file, index=False, sheet_name="Signals")
                 logger.bind(module="monitoring").info(

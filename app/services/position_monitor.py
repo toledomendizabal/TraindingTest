@@ -140,6 +140,21 @@ class PositionMonitor:
             pip_info = Asset.get_pip_info(asset)
             contract_size = pip_info["contract_size"]
             quote_currency = pip_info["quote_currency"]
+            pip_size = pip_info["pip_size"]
+
+            # Track Drawdown
+            if direction == "BUY":
+                floating_pips = (current_price - entry_price) / pip_size
+                if floating_pips < 0:
+                    drawdown = abs(floating_pips)
+                    if drawdown > signal.max_drawdown:
+                        signal.max_drawdown = round(drawdown, 1)
+            else:
+                floating_pips = (entry_price - current_price) / pip_size
+                if floating_pips < 0:
+                    drawdown = abs(floating_pips)
+                    if drawdown > signal.max_drawdown:
+                        signal.max_drawdown = round(drawdown, 1)
 
             # Check SL/TP
             hit_status = None
@@ -186,6 +201,16 @@ class PositionMonitor:
                     if usdjpy: quote_to_usd_rate = 1.0 / usdjpy["price"]
 
                 profit_loss = price_diff * lot_size * contract_size * quote_to_usd_rate
+                
+                # Final metrics
+                signal.exit_hour = datetime.now().strftime("%H:%M")
+                if signal.created_at:
+                    duration = (datetime.now() - signal.created_at).total_seconds() / 60
+                    signal.duration_minutes = round(duration, 1)
+                
+                risk_pips = signal.sl_pips if signal.sl_pips > 0 else 1
+                gain_pips = abs(exit_price - entry_price) / pip_size
+                signal.risk_reward_ratio = round(gain_pips / risk_pips, 2)
                 
                 await self._close_position(signal_id, hit_status, exit_price, profit_loss)
 
