@@ -8,6 +8,7 @@ import BacktestingPage from './pages/BacktestingPage'
 import ConfigPage from './pages/ConfigPage'
 import LogsPage from './pages/LogsPage'
 import LoginPage from './pages/LoginPage'
+import ChartPage from './pages/ChartPage'
 import { api } from './services/api'
 
 function App() {
@@ -84,6 +85,7 @@ function App() {
               <Route path="/backtesting" element={<BacktestingPage />} />
               <Route path="/config" element={<ConfigPage />} />
               <Route path="/logs" element={<LogsPage />} />
+              <Route path="/charts" element={<ChartPage />} />
               <Route path="/login" element={<LoginPage onLogin={handleLogin} />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>

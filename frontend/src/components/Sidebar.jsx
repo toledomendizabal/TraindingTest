@@ -6,6 +6,7 @@ const menuItems = [
   { path: '/signals', label: 'Señales', icon: '📈' },
   { path: '/backtesting', label: 'Backtesting', icon: '🔄' },
   { path: '/config', label: 'Configuración', icon: '⚙️' },
+  { path: '/charts', label: 'Gráficos', icon: '🕯️' },
   { path: '/logs', label: 'Logs', icon: '📋' },
 ]
 
