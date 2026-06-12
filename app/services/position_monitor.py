@@ -35,6 +35,10 @@ class PositionMonitor:
 
     async def verify_retroactive_signals(self):
         """Verify if active signals hit TP/SL while the system was offline."""
+        # Wait a few seconds for MT4/MT5 to generate the initial CSV files
+        logger.bind(module="monitoring").info("Waiting 5s for MetaTrader data to sync...")
+        await asyncio.sleep(5)
+        
         logger.bind(module="monitoring").info("Starting retroactive verification (Night-Watch)...")
         from app.services.signal_engine import signal_engine
         active_signals = signal_engine.get_active_signals()
@@ -48,10 +52,17 @@ class PositionMonitor:
                 logger.bind(module="monitoring").info(f"Checking history for {signal.asset} ({signal.id}) since {signal.created_at}")
                 
                 # Fetch up to 2000 M1 candles to cover up to 33 hours of offline time
-                df = await market_data_service.get_time_series(signal.asset, interval="1m", outputsize=2000)
+                # Try with retries
+                df = None
+                for attempt in range(3):
+                    df = await market_data_service.get_time_series(signal.asset, interval="1m", outputsize=2000)
+                    if df is not None and not df.empty:
+                        break
+                    logger.bind(module="monitoring").warning(f"Attempt {attempt+1}: Could not fetch history for {signal.asset}. Retrying...")
+                    await asyncio.sleep(2)
                 
                 if df is None or df.empty:
-                    logger.bind(module="monitoring").warning(f"Could not fetch history for {signal.asset}. Retrying with backup...")
+                    logger.bind(module="monitoring").error(f"Final failure fetching history for {signal.asset}. Skipping retroactive check.")
                     continue
                 
                 # Ensure datetime is comparable
