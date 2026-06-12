@@ -125,10 +125,11 @@ function DashboardPage() {
                   <th className="text-left py-2 px-3">Dirección</th>
                   <th className="text-right py-2 px-3">Entrada</th>
                   <th className="text-right py-2 px-3">SL</th>
-                  <th className="text-right py-2 px-3">TP1</th>
-                  <th className="text-right py-2 px-3">Lotaje</th>
-                  <th className="text-right py-2 px-3">Score</th>
-                  <th className="text-right py-2 px-3">Sesión</th>
+	                  <th className="text-right py-2 px-3">TP1</th>
+	                  <th className="text-right py-2 px-3">Lote</th>
+	                  <th className="text-right py-2 px-3">Drawdown</th>
+	                  <th className="text-right py-2 px-3">RR</th>
+	                  <th className="text-right py-2 px-3">Sesión</th>
                 </tr>
               </thead>
               <tbody>
@@ -146,12 +147,11 @@ function DashboardPage() {
                     </td>
                     <td className="py-2 px-3 text-right font-mono">{signal.entry_price}</td>
                     <td className="py-2 px-3 text-right font-mono text-red-400">{signal.stop_loss}</td>
-                    <td className="py-2 px-3 text-right font-mono text-green-400">{signal.take_profit_1}</td>
-                    <td className="py-2 px-3 text-right">{signal.lot_size}</td>
-                    <td className="py-2 px-3 text-right">
-                      <span className="text-primary-400">{signal.score}%</span>
-                    </td>
-                    <td className="py-2 px-3 text-right text-gray-400">{signal.session}</td>
+	                    <td className="py-2 px-3 text-right font-mono text-green-400">{signal.take_profit_1}</td>
+	                    <td className="py-2 px-3 text-right">{signal.lot_size}</td>
+	                    <td className="py-2 px-3 text-right font-mono text-orange-400">{signal.max_drawdown || 0}%</td>
+	                    <td className="py-2 px-3 text-right font-mono text-blue-400">{signal.risk_reward_ratio || 0}</td>
+	                    <td className="py-2 px-3 text-right text-gray-400">{signal.session}</td>
                   </tr>
                 ))}
               </tbody>

@@ -111,6 +111,9 @@ function SignalsPage() {
                 <th className="text-right py-3 px-3">TP3 (1:10)</th>
                 <th className="text-right py-3 px-3">Lote</th>
                 <th className="text-right py-3 px-3">Ind.</th>
+                <th className="text-right py-3 px-3">RR</th>
+                <th className="text-right py-3 px-3">Drawdown</th>
+                <th className="text-right py-3 px-3">Duración</th>
                 <th className="text-center py-3 px-3">Estado</th>
                 <th className="text-right py-3 px-3">P/L</th>
               </tr>
@@ -136,6 +139,9 @@ function SignalsPage() {
                   <td className="py-2 px-3 text-right font-mono text-green-400">{signal.take_profit_3}</td>
                   <td className="py-2 px-3 text-right">{signal.lot_size}</td>
                   <td className="py-2 px-3 text-right text-primary-400">{signal.indicators_met}/18</td>
+                  <td className="py-2 px-3 text-right font-mono text-blue-400">{signal.risk_reward ? `1:${signal.risk_reward}` : '-'}</td>
+                  <td className="py-2 px-3 text-right font-mono text-orange-400">{signal.max_drawdown ? `${signal.max_drawdown}%` : '-'}</td>
+                  <td className="py-2 px-3 text-right font-mono text-gray-300">{signal.duration ? `${signal.duration}m` : '-'}</td>
                   <td className="py-2 px-3 text-center">
                     <span className={`px-2 py-0.5 rounded text-xs ${
                       signal.status === 'ACTIVE' ? 'bg-blue-500/20 text-blue-400' :

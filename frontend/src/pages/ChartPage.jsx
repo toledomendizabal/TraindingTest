@@ -5,16 +5,19 @@ import { api } from '../services/api';
 const ChartPage = () => {
     const chartContainerRef = useRef();
     const chartRef = useRef();
-    const seriesRef = useRef();
+    const candleSeriesRef = useRef();
+    const ema50SeriesRef = useRef();
+    const ema200SeriesRef = useRef();
+    const priceLineRefsRef = useRef([]);
     const [asset, setAsset] = useState('XAUUSD');
     const [interval, setInterval] = useState('5m');
     const [loading, setLoading] = useState(true);
-    const [assets, setAssets] = useState(['XAUUSD', 'EURUSD', 'GBPUSD', 'GER40Cash', 'US30Cash', 'US100Cash']);
+    const [assets] = useState(['XAUUSD', 'EURUSD', 'GBPUSD', 'GER40Cash', 'US30Cash', 'US100Cash']);
 
+    // Initialize Chart (only once)
     useEffect(() => {
-        if (!chartContainerRef.current) return;
+        if (!chartContainerRef.current || chartRef.current) return;
 
-        // Initialize Chart
         const chart = createChart(chartContainerRef.current, {
             layout: {
                 backgroundColor: '#111827',
@@ -24,12 +27,8 @@ const ChartPage = () => {
                 vertLines: { color: '#1f2937' },
                 horzLines: { color: '#1f2937' },
             },
-            crosshair: {
-                mode: 0,
-            },
-            priceScale: {
-                borderColor: '#374151',
-            },
+            crosshair: { mode: 0 },
+            priceScale: { borderColor: '#374151' },
             timeScale: {
                 borderColor: '#374151',
                 timeVisible: true,
@@ -37,6 +36,7 @@ const ChartPage = () => {
             },
         });
 
+        // Candlestick Series
         const candlestickSeries = chart.addCandlestickSeries({
             upColor: '#22c55e',
             downColor: '#ef4444',
@@ -45,51 +45,98 @@ const ChartPage = () => {
             wickDownColor: '#ef4444',
         });
 
+        // EMA 50 Series (Blue)
+        const ema50Series = chart.addLineSeries({
+            color: '#3b82f6',
+            lineWidth: 2,
+            title: 'EMA 50',
+        });
+
+        // EMA 200 Series (Orange)
+        const ema200Series = chart.addLineSeries({
+            color: '#f97316',
+            lineWidth: 2,
+            title: 'EMA 200',
+        });
+
         chartRef.current = chart;
-        seriesRef.current = candlestickSeries;
+        candleSeriesRef.current = candlestickSeries;
+        ema50SeriesRef.current = ema50Series;
+        ema200SeriesRef.current = ema200Series;
+        priceLineRefsRef.current = [];
 
         const handleResize = () => {
-            chart.applyOptions({ width: chartContainerRef.current.clientWidth });
+            if (chartContainerRef.current) {
+                chart.applyOptions({ width: chartContainerRef.current.clientWidth });
+            }
         };
 
         window.addEventListener('resize', handleResize);
 
         return () => {
             window.removeEventListener('resize', handleResize);
-            chart.remove();
         };
     }, []);
 
+    // Fetch and update data
     useEffect(() => {
+        if (!chartRef.current || !candleSeriesRef.current) return;
+
         const fetchData = async () => {
             setLoading(true);
             try {
                 // Fetch Candles
                 const response = await api.get(`/charts/candles/${asset}?interval=${interval}`);
                 if (response.data && response.data.candles) {
-                    seriesRef.current.setData(response.data.candles);
+                    candleSeriesRef.current.setData(response.data.candles);
                 }
 
-                // Fetch Markers (Signals)
-                const markersResponse = await api.get(`/charts/markers/${asset}`);
-                if (markersResponse.data) {
-                    const markers = markersResponse.data.filter(m => m.type !== 'price_line');
-                    seriesRef.current.setMarkers(markers);
+                // Fetch EMA data
+                if (response.data && response.data.ema50) {
+                    ema50SeriesRef.current.setData(response.data.ema50);
+                }
+                if (response.data && response.data.ema200) {
+                    ema200SeriesRef.current.setData(response.data.ema200);
+                }
 
-                    // Add Price Lines for SL/TP
-                    const priceLines = markersResponse.data.filter(m => m.type === 'price_line');
-                    // Clear existing lines (not directly supported by simple API, but we can manage)
-                    // For now, just add them
-                    priceLines.forEach(line => {
-                        seriesRef.current.createPriceLine({
-                            price: line.price,
-                            color: line.color,
-                            lineWidth: 2,
-                            lineStyle: 2, // Dashed
-                            axisLabelVisible: true,
-                            title: line.title,
-                        });
+                // Fetch Markers (Signals) - WITHOUT price lines to avoid memory leak
+                const markersResponse = await api.get(`/charts/markers/${asset}`);
+                if (markersResponse.data && Array.isArray(markersResponse.data)) {
+                    const markers = markersResponse.data.filter(m => m.type !== 'price_line');
+                    candleSeriesRef.current.setMarkers(markers);
+
+                    // Clear old price lines
+                    priceLineRefsRef.current.forEach(line => {
+                        try {
+                            candleSeriesRef.current.removePriceLine(line);
+                        } catch (e) {
+                            // Silently ignore
+                        }
                     });
+                    priceLineRefsRef.current = [];
+
+                    // Add new price lines (limit to 10 to avoid memory issues)
+                    const priceLines = markersResponse.data.filter(m => m.type === 'price_line').slice(0, 10);
+                    priceLines.forEach(line => {
+                        try {
+                            const priceLine = candleSeriesRef.current.createPriceLine({
+                                price: line.price,
+                                color: line.color,
+                                lineWidth: 2,
+                                lineStyle: 2, // Dashed
+                                axisLabelVisible: true,
+                                title: line.title,
+                            });
+                            priceLineRefsRef.current.push(priceLine);
+                        } catch (e) {
+                            console.warn('Error creating price line:', e);
+                        }
+                    });
+                }
+
+                // Auto-scale the chart
+                if (chartRef.current) {
+                    chartRef.current.timeScale().fitContent();
                 }
             } catch (error) {
                 console.error('Error fetching chart data:', error);
@@ -129,27 +176,31 @@ const ChartPage = () => {
                 </div>
             </div>
 
-            <div className="bg-gray-800 rounded-lg p-4 shadow-xl border border-gray-700">
+            <div className="bg-gray-800 rounded-lg p-4 shadow-xl border border-gray-700 relative">
                 {loading && (
-                    <div className="absolute inset-0 flex items-center justify-center bg-gray-900 bg-opacity-50 z-10">
+                    <div className="absolute inset-0 flex items-center justify-center bg-gray-900 bg-opacity-50 z-10 rounded-lg">
                         <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500"></div>
                     </div>
                 )}
                 <div ref={chartContainerRef} style={{ height: '600px', width: '100%' }} />
             </div>
 
-            <div className="mt-6 grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="mt-6 grid grid-cols-1 md:grid-cols-4 gap-4">
                 <div className="bg-gray-800 p-4 rounded-lg border border-gray-700">
                     <h3 className="text-sm font-medium text-gray-400">Fuente de Datos</h3>
-                    <p className="text-lg font-bold text-green-500">MetaTrader 5 (Local)</p>
+                    <p className="text-lg font-bold text-green-500">MetaTrader 5</p>
                 </div>
                 <div className="bg-gray-800 p-4 rounded-lg border border-gray-700">
-                    <h3 className="text-sm font-medium text-gray-400">Estado de Red</h3>
-                    <p className="text-lg font-bold text-blue-500">Conectado (Live)</p>
+                    <h3 className="text-sm font-medium text-gray-400">EMA 50</h3>
+                    <p className="text-lg font-bold text-blue-500">━━━</p>
+                </div>
+                <div className="bg-gray-800 p-4 rounded-lg border border-gray-700">
+                    <h3 className="text-sm font-medium text-gray-400">EMA 200</h3>
+                    <p className="text-lg font-bold text-orange-500">━━━</p>
                 </div>
                 <div className="bg-gray-800 p-4 rounded-lg border border-gray-700">
                     <h3 className="text-sm font-medium text-gray-400">Actualización</h3>
-                    <p className="text-lg font-bold text-gray-200">Cada 30 segundos</p>
+                    <p className="text-lg font-bold text-gray-200">Cada 30s</p>
                 </div>
             </div>
         </div>

@@ -256,8 +256,9 @@ class PositionMonitor:
 
         try:
             from app.services.telegram_service import telegram_service
+            asset = signal_engine.active_signals[signal_id].asset if signal_id in signal_engine.active_signals else "Unknown"
             await telegram_service.send_close_notification(
-                signal_id, status.value, close_price, profit_loss
+                signal_id, status.value, close_price, profit_loss, asset
             )
         except Exception as e:
             logger.error(f"Telegram notify error: {e}")

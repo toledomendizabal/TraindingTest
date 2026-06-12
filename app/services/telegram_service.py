@@ -77,13 +77,13 @@ class TelegramService:
         return await self.send_message(message)
 
     async def send_close_notification(self, signal_id: str, status: str,
-                                       close_price: float, profit_loss: float) -> bool:
+                                       close_price: float, profit_loss: float, asset: str = "Unknown") -> bool:
         """Send position close notification."""
         emoji = "✅" if profit_loss > 0 else "❌"
         result = "GANANCIA" if profit_loss > 0 else "PÉRDIDA"
 
         message = (
-            f"{emoji} <b>POSICIÓN CERRADA</b>\n"
+            f"{emoji} <b>POSICIÓN CERRADA - {asset}</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"🆔 ID: {signal_id}\n"
             f"📊 Estado: {status}\n"
