@@ -136,7 +136,8 @@ class MarketDataService:
         """Get historical data prioritizing MT4 history files."""
         # 1. Try MT4 History File
         try:
-            clean_symbol = asset.upper().replace("/", "")
+            # Match the MQ5 logic: StringReplace(safe_symbol, "/", "");
+            clean_symbol = asset.upper().replace("/", "").replace("\\", "")
             history_file = os.path.join(settings.MT4_FILES_PATH, f"history_{clean_symbol}.csv")
             
             if os.path.exists(history_file):

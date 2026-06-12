@@ -69,6 +69,10 @@ void ExportHistory()
       StringReplace(safe_symbol, "\\", "");
       
       string fileName = "history_" + safe_symbol + ".csv";
+      
+      // Ensure data is synchronized before copying
+      if(!SymbolIsSynchronized(symbol)) continue;
+
       int handle = FileOpen(fileName, FILE_CSV|FILE_WRITE|FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_COMMON|FILE_ANSI, ',');
       
       if(handle != INVALID_HANDLE)
@@ -77,7 +81,9 @@ void ExportHistory()
          
          MqlRates rates[];
          ArraySetAsSeries(rates, true);
-         int copied = CopyRates(symbol, PERIOD_CURRENT, 0, HistoryBars, rates);
+         
+         // Force PERIOD_M1 for Night-Watch retroactive verification
+         int copied = CopyRates(symbol, PERIOD_M1, 0, HistoryBars, rates);
          
          for(int j=0; j<copied; j++)
          {
