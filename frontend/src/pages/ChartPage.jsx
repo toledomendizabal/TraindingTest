@@ -10,7 +10,7 @@ const ChartPage = () => {
     const ema200SeriesRef = useRef();
     const priceLineRefsRef = useRef([]);
     const [asset, setAsset] = useState('XAUUSD');
-    const [interval, setInterval] = useState('5m');
+    const [chartInterval, setChartInterval] = useState('5m');
     const [loading, setLoading] = useState(true);
     const [assets] = useState(['XAUUSD', 'EURUSD', 'GBPUSD', 'GER40Cash', 'US30Cash', 'US100Cash']);
 
@@ -86,7 +86,7 @@ const ChartPage = () => {
             setLoading(true);
             try {
                 // Fetch Candles
-                const response = await api.get(`/charts/candles/${asset}?interval=${interval}`);
+                const response = await api.get(`/charts/candles/${asset}?interval=${chartInterval}`);
                 if (response.data && response.data.candles) {
                     candleSeriesRef.current.setData(response.data.candles);
                 }
@@ -145,10 +145,10 @@ const ChartPage = () => {
         };
 
         fetchData();
-        const intervalId = setInterval(fetchData, 30000); // Refresh every 30s
+        const intervalId = window.setInterval(fetchData, 30000); // Refresh every 30s
 
-        return () => clearInterval(intervalId);
-    }, [asset, interval]);
+        return () => window.clearInterval(intervalId);
+    }, [asset, chartInterval]);
 
     return (
         <div className="p-6 bg-gray-900 min-h-screen text-white">
@@ -163,8 +163,8 @@ const ChartPage = () => {
                         {assets.map(a => <option key={a} value={a}>{a}</option>)}
                     </select>
                     <select 
-                        value={interval} 
-                        onChange={(e) => setInterval(e.target.value)}
+                        value={chartInterval} 
+                        onChange={(e) => setChartInterval(e.target.value)}
                         className="bg-gray-800 border border-gray-700 rounded px-3 py-2 outline-none focus:ring-2 focus:ring-blue-500"
                     >
                         <option value="1m">1m</option>
