@@ -1,9 +1,12 @@
 """API endpoints for chart data."""
 from fastapi import APIRouter, HTTPException, Query
 from typing import List, Dict, Optional
+import pandas as pd
 from app.services.market_data import market_data_service
 from app.services.signal_engine import signal_engine
+from app.services.indicators import indicator_service
 from datetime import datetime
+from loguru import logger
 
 router = APIRouter()
 
@@ -61,11 +64,12 @@ async def get_candles(
         raise HTTPException(status_code=500, detail=f"Chart Error: {str(e)}")
 
 @router.get("/markers/{asset}")
-async def get_chart_markers(asset: str):
-    """Get markers (Entry, TP, SL) for active signals of an asset."""
+async def get_chart_markers(asset: str, interval: str = "5m"):
+    """Get markers (Entry, TP, SL, FVG, Liquidity) for an asset."""
     active_signals = signal_engine.get_active_signals()
     markers = []
     
+    # 1. Active Trade Markers
     for signal in active_signals:
         if signal.asset == asset:
             # Entry marker
@@ -87,9 +91,49 @@ async def get_chart_markers(asset: str):
             })
             markers.append({
                 "type": "price_line",
+                "price": signal.take_profit_1,
+                "color": "#22c55e",
+                "title": "TP1"
+            })
+            markers.append({
+                "type": "price_line",
                 "price": signal.take_profit_3,
                 "color": "#22c55e",
                 "title": "TP3"
             })
+
+    # 2. SMC Structural Markers (FVG & Liquidity)
+    try:
+        df = await market_data_service.get_time_series(asset, interval=interval, outputsize=100)
+        if df is not None and not df.empty:
+            fvgs = indicator_service.detect_fvg(df)
+            liquidity = indicator_service.detect_liquidity(df)
+            
+            # Add FVG lines
+            for fvg in fvgs[-5:]: # Only last 5
+                markers.append({
+                    "type": "price_line",
+                    "price": fvg["price"],
+                    "color": "#3b82f6" if fvg["type"] == "BULLISH" else "#f97316",
+                    "title": f"FVG {fvg['type'][:4]}"
+                })
+                
+            # Add Liquidity lines
+            if liquidity["BSL"]:
+                markers.append({
+                    "type": "price_line",
+                    "price": max(liquidity["BSL"]),
+                    "color": "#eab308",
+                    "title": "BSL"
+                })
+            if liquidity["SSL"]:
+                markers.append({
+                    "type": "price_line",
+                    "price": min(liquidity["SSL"]),
+                    "color": "#a855f7",
+                    "title": "SSL"
+                })
+    except Exception as e:
+        logger.error(f"Error adding SMC markers: {e}")
             
     return markers
