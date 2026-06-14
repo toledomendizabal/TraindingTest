@@ -62,25 +62,8 @@ class IndicatorService:
         details = []
         current_price = df["close"].iloc[-1]
 
-        # --- Market Phase Filter: Accumulation vs Distribution ---
-        # Using ADX and Bollinger Bands to detect range (accumulation) vs trend (distribution)
-        adx_data = indicators.get("ADX_DMI")
-        bb_data = indicators.get("BOLLINGER_BANDS")
-        
-        is_distribution = False
-        if adx_data and adx_data.get("adx", 0) > 20:
-            is_distribution = True
-            details.append(f"Market Phase: Distribution (ADX={adx_data['adx']:.1f})")
-        elif bb_data:
-            # Check if BB is expanding
-            bb_width = (bb_data.get("upper", 0) - bb_data.get("lower", 0)) / bb_data.get("middle", 1)
-            if bb_width > 0.002: # Threshold for expansion
-                is_distribution = True
-                details.append("Market Phase: Distribution (BB Expansion)")
-        
-        if not is_distribution:
-            details.append("Market Phase: Accumulation (Signal Blocked)")
-            return "NEUTRAL", 0, details
+        # Market Phase Filter disabled by user request
+        details.append("Market Phase: All phases allowed")
 
 
         # Layer 1: Trend Direction
@@ -565,6 +548,49 @@ class IndicatorService:
             return float(mfi.iloc[-1]) if pd.notna(mfi.iloc[-1]) else 50.0
         except Exception:
             return 50.0
+
+    def detect_fvg(self, df: pd.DataFrame) -> List[Dict]:
+        """Detect Fair Value Gaps (FVG)."""
+        fvgs = []
+        try:
+            for i in range(2, len(df)):
+                # Bullish FVG (Gap between Candle 1 High and Candle 3 Low)
+                if df["low"].iloc[i] > df["high"].iloc[i-2]:
+                    fvgs.append({
+                        "type": "BULLISH",
+                        "top": float(df["low"].iloc[i]),
+                        "bottom": float(df["high"].iloc[i-2]),
+                        "index": i-1,
+                        "price": float((df["low"].iloc[i] + df["high"].iloc[i-2]) / 2)
+                    })
+                # Bearish FVG (Gap between Candle 1 Low and Candle 3 High)
+                elif df["high"].iloc[i] < df["low"].iloc[i-2]:
+                    fvgs.append({
+                        "type": "BEARISH",
+                        "top": float(df["low"].iloc[i-2]),
+                        "bottom": float(df["high"].iloc[i]),
+                        "index": i-1,
+                        "price": float((df["low"].iloc[i-2] + df["high"].iloc[i]) / 2)
+                    })
+            return fvgs
+        except Exception:
+            return []
+
+    def detect_liquidity(self, df: pd.DataFrame) -> Dict[str, List[float]]:
+        """Detect Buy-side and Sell-side Liquidity zones (Swing Highs/Lows)."""
+        liquidity = {"BSL": [], "SSL": []}
+        try:
+            # Simple swing high/low detection (Fractals)
+            for i in range(5, len(df)-5):
+                # Swing High (BSL)
+                if df["high"].iloc[i] == df["high"].iloc[i-2:i+3].max():
+                    liquidity["BSL"].append(float(df["high"].iloc[i]))
+                # Swing Low (SSL)
+                if df["low"].iloc[i] == df["low"].iloc[i-2:i+3].min():
+                    liquidity["SSL"].append(float(df["low"].iloc[i]))
+            return liquidity
+        except Exception:
+            return liquidity
 
 
 # Singleton instance

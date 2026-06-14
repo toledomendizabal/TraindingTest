@@ -1,5 +1,6 @@
 """Signal generation engine with advanced risk management and Fibonacci levels."""
 import uuid
+import pandas as pd
 from datetime import datetime
 from typing import Optional, List, Dict
 from loguru import logger
@@ -104,7 +105,8 @@ class SignalEngine:
                 atr=atr_value if atr_value else current_price * 0.001,
                 indicators_met=indicators_met,
                 details=details,
-                spread=spread
+                spread=spread,
+                df=df
             )
 
             if signal:
@@ -129,7 +131,8 @@ class SignalEngine:
         atr: float,
         indicators_met: int,
         details: List[str],
-        spread: float = 0.0
+        spread: float = 0.0,
+        df: Optional[pd.DataFrame] = None
     ) -> Optional[Signal]:
         try:
             pip_info = Asset.get_pip_info(asset)
@@ -151,28 +154,77 @@ class SignalEngine:
             if current_sl_pips < min_sl_pips:
                 sl_distance = min_sl_pips * pip_size
 
-            # 2. Calculate Take Profit levels using Fibonacci Extensions (R:R equivalents)
+            # 2. Advanced SMC Targets: Fibonacci + FVG + Liquidity
+            fvgs = indicator_service.detect_fvg(df)
+            liquidity = indicator_service.detect_liquidity(df)
+            
             if direction == SignalDirection.BUY:
                 stop_loss = entry_price - sl_distance
+                
+                # Default Fibonacci targets
                 tp1 = entry_price + (sl_distance * 3)
                 tp2 = entry_price + (sl_distance * 6)
                 tp3 = entry_price + (sl_distance * 10)
+                
+                # Adjust TP with Bearish FVGs (Resistance) and BSL (Liquidity)
+                bearish_fvgs = [f["price"] for f in fvgs if f["type"] == "BEARISH" and f["price"] > entry_price]
+                bsl_zones = [p for p in liquidity["BSL"] if p > entry_price]
+                
+                if bearish_fvgs:
+                    tp1 = min(tp1, min(bearish_fvgs))
+                if bsl_zones:
+                    tp3 = max(tp3, max(bsl_zones))
             else:
                 stop_loss = entry_price + sl_distance
+                
+                # Default Fibonacci targets
                 tp1 = entry_price - (sl_distance * 3)
                 tp2 = entry_price - (sl_distance * 6)
                 tp3 = entry_price - (sl_distance * 10)
+                
+                # Adjust TP with Bullish FVGs (Support) and SSL (Liquidity)
+                bullish_fvgs = [f["price"] for f in fvgs if f["type"] == "BULLISH" and f["price"] < entry_price]
+                ssl_zones = [p for p in liquidity["SSL"] if p < entry_price]
+                
+                if bullish_fvgs:
+                    tp1 = max(tp1, max(bullish_fvgs))
+                if ssl_zones:
+                    tp3 = min(tp3, min(ssl_zones))
 
-            # 3. Accurate Risk Management
+            # 3. Dynamic SMC Risk Management
             capital = settings.INITIAL_CAPITAL
-            # Special risk for Gold: 0.75%, others 0.3%
-            risk_pct = 0.75 if is_gold else settings.RISK_PERCENTAGE
-            risk_amount_usd = capital * (risk_pct / 100)
+            
+            # Base risk: 0.75% for Gold, 0.3% for others (using settings)
+            base_risk_pct = 0.75 if is_gold else settings.RISK_PERCENTAGE
+            
+            # Quality adjustment: Boost risk if signal is high quality (Confluence with FVG/Liquidity)
+            quality_multiplier = 1.0
+            
+            # Check for FVG Confluence near entry (within 0.1% of entry price)
+            entry_fvgs = [f for f in fvgs if abs(f["price"] - entry_price) / entry_price < 0.001]
+            if entry_fvgs:
+                quality_multiplier += 0.25 # +25% confidence
+                
+            # Check for Liquidity Sweep (Signal occurring after a sweep in the last 10 candles)
+            if df is not None:
+                try:
+                    if direction == SignalDirection.BUY:
+                        recent_lows = df["low"].iloc[-10:].min()
+                        if any(ssl < recent_lows for ssl in liquidity["SSL"]):
+                            quality_multiplier += 0.25 # +25% confidence
+                    else:
+                        recent_highs = df["high"].iloc[-10:].max()
+                        if any(bsl > recent_highs for bsl in liquidity["BSL"]):
+                            quality_multiplier += 0.25 # +25% confidence
+                except Exception as e:
+                    logger.error(f"Error checking liquidity sweep: {e}")
+
+            final_risk_pct = (base_risk_pct / 100) * quality_multiplier
+            risk_amount_usd = capital * final_risk_pct
 
             # Currency Conversion (Quote to USD)
             quote_to_usd_rate = 1.0
             if quote_currency == "EUR":
-                # For GER40, we need EURUSD rate
                 eurusd_data = await market_data_service.get_price("EURUSD")
                 if eurusd_data:
                     quote_to_usd_rate = eurusd_data["price"]
