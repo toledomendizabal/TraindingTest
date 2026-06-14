@@ -86,6 +86,11 @@ const ChartPage = () => {
         const loadData = async () => {
             setIsLoading(true);
             try {
+                // Clear series before loading new asset/timeframe to avoid mixing data
+                candleSeriesRef.current.setData([]);
+                ema50SeriesRef.current.setData([]);
+                ema200SeriesRef.current.setData([]);
+
                 // Fetch Candles with explicit timeframe string
                 const response = await api.get(`/charts/candles/${selectedAsset}`, {
                     params: { interval: timeframe }

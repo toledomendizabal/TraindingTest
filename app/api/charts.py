@@ -19,25 +19,46 @@ async def get_candles(
         if df is None or df.empty:
             raise HTTPException(status_code=404, detail=f"No data found for {asset}")
         
+        # Calculate EMAs for visual confirmation
+        ema50 = df["close"].ewm(span=50, adjust=False).mean()
+        ema200 = df["close"].ewm(span=200, adjust=False).mean()
+
         # Format for Lightweight Charts
         candles = []
-        for _, row in df.iterrows():
+        ema50_data = []
+        ema200_data = []
+        
+        for i, row in df.iterrows():
+            ts = int(row["datetime"].timestamp())
             candles.append({
-                "time": int(row["datetime"].timestamp()),
+                "time": ts,
                 "open": float(row["open"]),
                 "high": float(row["high"]),
                 "low": float(row["low"]),
                 "close": float(row["close"]),
                 "volume": float(row.get("volume", 0))
             })
+            
+            if not pd.isna(ema50.iloc[i]):
+                ema50_data.append({"time": ts, "value": float(ema50.iloc[i])})
+            if not pd.isna(ema200.iloc[i]):
+                ema200_data.append({"time": ts, "value": float(ema200.iloc[i])})
         
-        return {
+        # Final check to avoid NaN in JSON
+        result = {
             "asset": asset,
             "interval": interval,
-            "candles": candles
+            "candles": candles,
+            "ema50": ema50_data,
+            "ema200": ema200_data
         }
+        
+        logger.debug(f"Returning {len(candles)} candles for {asset}")
+        return result
+        
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error in candles API for {asset}: {e}")
+        raise HTTPException(status_code=500, detail=f"Chart Error: {str(e)}")
 
 @router.get("/markers/{asset}")
 async def get_chart_markers(asset: str):

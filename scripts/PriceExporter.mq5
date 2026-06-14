@@ -12,7 +12,7 @@
 // Python will prioritize these files over Twelve Data API.
 
 input int ExportIntervalSeconds = 1; 
-input int HistoryBars = 100;         // Number of bars to export for indicators
+input int HistoryBars = 1000;        // Number of bars to export for indicators and Night-Watch
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |

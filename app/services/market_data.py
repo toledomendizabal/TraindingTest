@@ -140,6 +140,8 @@ class MarketDataService:
             clean_symbol = asset.upper().replace("/", "").replace("\\", "")
             history_file = os.path.join(settings.MT4_FILES_PATH, f"history_{clean_symbol}.csv")
             
+            logger.debug(f"Searching MT4 history at: {history_file}")
+            
             if os.path.exists(history_file):
                 df = pd.read_csv(history_file)
                 df["datetime"] = pd.to_datetime(df["datetime"])
@@ -162,7 +164,14 @@ class MarketDataService:
             symbol = self._get_symbol(asset)
             
             # Map interval to Twelve Data format
-            td_interval = "5min" if interval == "5m" else "1h" if interval == "1h" else "1day"
+            td_map = {
+                "1m": "1min",
+                "5m": "5min",
+                "15m": "15min",
+                "1h": "1h",
+                "1d": "1day"
+            }
+            td_interval = td_map.get(interval, "5min")
 
             response = await client.get(
                 f"{self.BASE_URL}/time_series",
