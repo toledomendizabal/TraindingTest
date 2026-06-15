@@ -202,20 +202,25 @@ class SignalEngine:
             
             # Check for FVG Confluence near entry (within 0.1% of entry price)
             entry_fvgs = [f for f in fvgs if abs(f["price"] - entry_price) / entry_price < 0.001]
+            fvg_confluence = False
             if entry_fvgs:
                 quality_multiplier += 0.25 # +25% confidence
+                fvg_confluence = True
                 
             # Check for Liquidity Sweep (Signal occurring after a sweep in the last 10 candles)
+            liquidity_sweep = False
             if df is not None:
                 try:
                     if direction == SignalDirection.BUY:
                         recent_lows = df["low"].iloc[-10:].min()
                         if any(ssl < recent_lows for ssl in liquidity["SSL"]):
                             quality_multiplier += 0.25 # +25% confidence
+                            liquidity_sweep = True
                     else:
                         recent_highs = df["high"].iloc[-10:].max()
                         if any(bsl > recent_highs for bsl in liquidity["BSL"]):
                             quality_multiplier += 0.25 # +25% confidence
+                            liquidity_sweep = True
                 except Exception as e:
                     logger.error(f"Error checking liquidity sweep: {e}")
 
@@ -273,6 +278,9 @@ class SignalEngine:
                 entry_hour=datetime.now().strftime("%H:%M"),
                 entry_spread=round(spread / pip_size, 1),
                 entry_atr=round(atr / pip_size, 1),
+                smc_quality=round(quality_multiplier, 2),
+                fvg_confluence=fvg_confluence,
+                liquidity_sweep=liquidity_sweep,
                 indicators_detail=details
             )
         except Exception as e:

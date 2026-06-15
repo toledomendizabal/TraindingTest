@@ -52,6 +52,9 @@ class Signal(BaseModel):
     exit_hour: Optional[str] = None
     entry_spread: float = 0.0
     entry_atr: float = 0.0
+    smc_quality: float = 1.0
+    fvg_confluence: bool = False
+    liquidity_sweep: bool = False
     indicators_detail: List[str] = []
 
     class Config:

@@ -84,7 +84,8 @@ class ExcelManager:
             "status", "session", "created_at", "closed_at",
             "close_price", "profit_loss", "result",
             "max_drawdown", "risk_reward_ratio", "duration_minutes",
-            "entry_hour", "exit_hour", "entry_spread", "entry_atr"
+            "entry_hour", "exit_hour", "entry_spread", "entry_atr",
+            "smc_quality", "fvg_confluence", "liquidity_sweep"
         ]
         df = pd.DataFrame(columns=columns)
         df.to_excel(self.signals_file, index=False, sheet_name="Signals")
@@ -168,7 +169,10 @@ class ExcelManager:
                 "entry_hour": signal.entry_hour,
                 "exit_hour": "",
                 "entry_spread": signal.entry_spread,
-                "entry_atr": signal.entry_atr
+                "entry_atr": signal.entry_atr,
+                "smc_quality": getattr(signal, "smc_quality", 1.0),
+                "fvg_confluence": getattr(signal, "fvg_confluence", False),
+                "liquidity_sweep": getattr(signal, "liquidity_sweep", False)
             }
 
             df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)

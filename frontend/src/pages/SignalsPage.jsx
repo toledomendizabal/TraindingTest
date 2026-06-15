@@ -111,6 +111,7 @@ function SignalsPage() {
                 <th className="text-right py-3 px-3">TP3 (1:10)</th>
                 <th className="text-right py-3 px-3">Lote</th>
                 <th className="text-right py-3 px-3">Ind.</th>
+                <th className="text-right py-3 px-3">SMC Qual.</th>
                 <th className="text-right py-3 px-3">RR</th>
                 <th className="text-right py-3 px-3">Drawdown</th>
                 <th className="text-right py-3 px-3">Duración</th>
@@ -139,6 +140,15 @@ function SignalsPage() {
                   <td className="py-2 px-3 text-right font-mono text-green-400">{signal.take_profit_3}</td>
                   <td className="py-2 px-3 text-right">{signal.lot_size}</td>
                   <td className="py-2 px-3 text-right text-primary-400">{signal.indicators_met}/18</td>
+                  <td className="py-2 px-3 text-right">
+                    <div className="flex flex-col items-end">
+                      <span className="font-bold text-yellow-500">{signal.smc_quality || '1.0'}x</span>
+                      <div className="flex space-x-1 mt-0.5">
+                        {signal.fvg_confluence && <span title="FVG Confluence" className="w-2 h-2 rounded-full bg-blue-500"></span>}
+                        {signal.liquidity_sweep && <span title="Liquidity Sweep" className="w-2 h-2 rounded-full bg-purple-500"></span>}
+                      </div>
+                    </div>
+                  </td>
                   <td className="py-2 px-3 text-right font-mono text-blue-400">{signal.risk_reward ? `1:${signal.risk_reward}` : '-'}</td>
                   <td className="py-2 px-3 text-right font-mono text-orange-400">{signal.max_drawdown ? `${signal.max_drawdown}%` : '-'}</td>
                   <td className="py-2 px-3 text-right font-mono text-gray-300">{signal.duration ? `${signal.duration}m` : '-'}</td>
