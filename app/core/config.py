@@ -62,6 +62,7 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
+        extra = "ignore"
 
     def model_post_init(self, __context):
         """Set derived paths after initialization."""
