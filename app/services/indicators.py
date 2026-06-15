@@ -57,10 +57,13 @@ class IndicatorService:
         Evaluate all indicators and determine BUY/SELL/NEUTRAL signal.
         Returns: (direction, indicators_met, details)
         """
-        buy_signals = 0
-        sell_signals = 0
+        buy_score = 0.0
+        sell_score = 0.0
         details = []
         current_price = df["close"].iloc[-1]
+
+        # Get indicator configurations with their weights
+        indicator_configs = {ind.name: ind for ind in self.indicators}
 
         # Market Phase Filter disabled by user request
         details.append("Market Phase: All phases allowed")
@@ -71,10 +74,10 @@ class IndicatorService:
         if "EMA_200" in indicators and indicators["EMA_200"] is not None:
             ema200 = indicators["EMA_200"]
             if current_price > ema200:
-                buy_signals += 1
+                buy_score += indicator_configs["EMA_200"].weight
                 details.append("EMA200: Price above (Bullish)")
             elif current_price < ema200:
-                sell_signals += 1
+                sell_score += indicator_configs["EMA_200"].weight
                 details.append("EMA200: Price below (Bearish)")
 
         # EMA 50
@@ -82,10 +85,10 @@ class IndicatorService:
             ema50 = indicators["EMA_50"]
             ema200 = indicators.get("EMA_200")
             if ema200 and ema50 > ema200:
-                buy_signals += 1
+                buy_score += indicator_configs["EMA_50"].weight
                 details.append("EMA50 > EMA200 (Bullish)")
             elif ema200 and ema50 < ema200:
-                sell_signals += 1
+                sell_score += indicator_configs["EMA_50"].weight
                 details.append("EMA50 < EMA200 (Bearish)")
 
         # EMA Alignment
@@ -95,92 +98,98 @@ class IndicatorService:
             ema50 = indicators["EMA_50"]
             if ema9 and ema20 and ema50:
                 if ema9 > ema20 > ema50:
-                    buy_signals += 1
+                    buy_score += indicator_configs["EMA_9"].weight # Assuming EMA_9 weight for alignment
                     details.append("EMA Alignment: 9>20>50 (Bullish)")
                 elif ema9 < ema20 < ema50:
-                    sell_signals += 1
+                    sell_score += indicator_configs["EMA_9"].weight # Assuming EMA_9 weight for alignment
                     details.append("EMA Alignment: 9<20<50 (Bearish)")
 
         # Parabolic SAR
         if "PARABOLIC_SAR" in indicators and indicators["PARABOLIC_SAR"] is not None:
             sar = indicators["PARABOLIC_SAR"]
             if current_price > sar:
-                buy_signals += 1
+                buy_score += indicator_configs["PARABOLIC_SAR"].weight
                 details.append("SAR: Below price (Bullish)")
             else:
-                sell_signals += 1
+                sell_score += indicator_configs["PARABOLIC_SAR"].weight
                 details.append("SAR: Above price (Bearish)")
 
         # Ichimoku
         if "ICHIMOKU" in indicators and indicators["ICHIMOKU"] is not None:
             ichi = indicators["ICHIMOKU"]
             if ichi.get("signal") == "BUY":
-                buy_signals += 1
+                buy_score += indicator_configs["ICHIMOKU"].weight
                 details.append("Ichimoku: Above cloud (Bullish)")
             elif ichi.get("signal") == "SELL":
-                sell_signals += 1
+                sell_score += indicator_configs["ICHIMOKU"].weight
                 details.append("Ichimoku: Below cloud (Bearish)")
 
         # ADX/DMI
         if "ADX_DMI" in indicators and indicators["ADX_DMI"] is not None:
             adx_data = indicators["ADX_DMI"]
-            if adx_data.get("adx", 0) > 25:
+            if adx_data.get("adx", 0) > indicator_configs["ADX_DMI"].parameters.get("threshold", 25):
                 if adx_data.get("plus_di", 0) > adx_data.get("minus_di", 0):
-                    buy_signals += 1
-                    details.append(f"ADX: {adx_data['adx']:.1f} +DI>{'-'}DI (Bullish)")
+                    buy_score += indicator_configs["ADX_DMI"].weight
+                    details.append(f"ADX: {adx_data['adx']:.1f} +DI>-DI (Bullish)")
                 else:
-                    sell_signals += 1
+                    sell_score += indicator_configs["ADX_DMI"].weight
                     details.append(f"ADX: {adx_data['adx']:.1f} -DI>+DI (Bearish)")
 
         # Layer 3: Momentum Triggers
         # RSI
         if "RSI" in indicators and indicators["RSI"] is not None:
             rsi = indicators["RSI"]
-            if rsi < 30:
-                buy_signals += 1
+            rsi_oversold = indicator_configs["RSI"].parameters.get("oversold", 30)
+            rsi_overbought = indicator_configs["RSI"].parameters.get("overbought", 70)
+            if rsi < rsi_oversold:
+                buy_score += indicator_configs["RSI"].weight
                 details.append(f"RSI: {rsi:.1f} Oversold (Buy)")
-            elif rsi > 70:
-                sell_signals += 1
+            elif rsi > rsi_overbought:
+                sell_score += indicator_configs["RSI"].weight
                 details.append(f"RSI: {rsi:.1f} Overbought (Sell)")
 
         # Stochastic
         if "STOCHASTIC" in indicators and indicators["STOCHASTIC"] is not None:
             stoch = indicators["STOCHASTIC"]
-            if stoch.get("k", 50) < 20 and stoch.get("d", 50) < 20:
-                buy_signals += 1
+            stoch_oversold = indicator_configs["STOCHASTIC"].parameters.get("oversold", 20)
+            stoch_overbought = indicator_configs["STOCHASTIC"].parameters.get("overbought", 80)
+            if stoch.get("k", 50) < stoch_oversold and stoch.get("d", 50) < stoch_oversold:
+                buy_score += indicator_configs["STOCHASTIC"].weight
                 details.append("Stochastic: Oversold (Buy)")
-            elif stoch.get("k", 50) > 80 and stoch.get("d", 50) > 80:
-                sell_signals += 1
+            elif stoch.get("k", 50) > stoch_overbought and stoch.get("d", 50) > stoch_overbought:
+                sell_score += indicator_configs["STOCHASTIC"].weight
                 details.append("Stochastic: Overbought (Sell)")
 
         # MACD
         if "MACD" in indicators and indicators["MACD"] is not None:
             macd_data = indicators["MACD"]
             if macd_data.get("histogram", 0) > 0 and macd_data.get("macd", 0) > macd_data.get("signal", 0):
-                buy_signals += 1
+                buy_score += indicator_configs["MACD"].weight
                 details.append("MACD: Bullish crossover")
             elif macd_data.get("histogram", 0) < 0 and macd_data.get("macd", 0) < macd_data.get("signal", 0):
-                sell_signals += 1
+                sell_score += indicator_configs["MACD"].weight
                 details.append("MACD: Bearish crossover")
 
         # CCI
         if "CCI" in indicators and indicators["CCI"] is not None:
             cci = indicators["CCI"]
-            if cci < -100:
-                buy_signals += 1
+            cci_oversold = indicator_configs["CCI"].parameters.get("lower", -100)
+            cci_overbought = indicator_configs["CCI"].parameters.get("upper", 100)
+            if cci < cci_oversold:
+                buy_score += indicator_configs["CCI"].weight
                 details.append(f"CCI: {cci:.1f} Oversold (Buy)")
-            elif cci > 100:
-                sell_signals += 1
+            elif cci > cci_overbought:
+                sell_score += indicator_configs["CCI"].weight
                 details.append(f"CCI: {cci:.1f} Overbought (Sell)")
 
         # Awesome Oscillator
         if "AWESOME_OSCILLATOR" in indicators and indicators["AWESOME_OSCILLATOR"] is not None:
             ao = indicators["AWESOME_OSCILLATOR"]
             if ao.get("signal") == "BUY":
-                buy_signals += 1
+                buy_score += indicator_configs["AWESOME_OSCILLATOR"].weight
                 details.append("AO: Saucer Buy signal")
             elif ao.get("signal") == "SELL":
-                sell_signals += 1
+                sell_score += indicator_configs["AWESOME_OSCILLATOR"].weight
                 details.append("AO: Saucer Sell signal")
 
         # Layer 2: Volatility / Value Zones
@@ -188,61 +197,81 @@ class IndicatorService:
         if "BOLLINGER_BANDS" in indicators and indicators["BOLLINGER_BANDS"] is not None:
             bb = indicators["BOLLINGER_BANDS"]
             if current_price <= bb.get("lower", 0):
-                buy_signals += 1
+                buy_score += indicator_configs["BOLLINGER_BANDS"].weight
                 details.append("BB: Price at lower band (Buy)")
             elif current_price >= bb.get("upper", float("inf")):
-                sell_signals += 1
+                sell_score += indicator_configs["BOLLINGER_BANDS"].weight
                 details.append("BB: Price at upper band (Sell)")
 
         # Williams %R
         if "WILLIAMS_R" in indicators and indicators["WILLIAMS_R"] is not None:
             wr = indicators["WILLIAMS_R"]
-            if wr < -80:
-                buy_signals += 1
+            wr_oversold = indicator_configs["WILLIAMS_R"].parameters.get("oversold", -80)
+            wr_overbought = indicator_configs["WILLIAMS_R"].parameters.get("overbought", -20)
+            if wr < wr_oversold:
+                buy_score += indicator_configs["WILLIAMS_R"].weight
                 details.append(f"Williams %R: {wr:.1f} Oversold (Buy)")
-            elif wr > -20:
-                sell_signals += 1
+            elif wr > wr_overbought:
+                sell_score += indicator_configs["WILLIAMS_R"].weight
                 details.append(f"Williams %R: {wr:.1f} Overbought (Sell)")
 
         # Keltner Channels
         if "KELTNER_CHANNELS" in indicators and indicators["KELTNER_CHANNELS"] is not None:
             kc = indicators["KELTNER_CHANNELS"]
             if current_price > kc.get("upper", float("inf")):
-                buy_signals += 1
+                buy_score += indicator_configs["KELTNER_CHANNELS"].weight
                 details.append("Keltner: Breakout above (Buy)")
             elif current_price < kc.get("lower", 0):
-                sell_signals += 1
+                sell_score += indicator_configs["KELTNER_CHANNELS"].weight
                 details.append("Keltner: Breakout below (Sell)")
 
         # Volume
         if "VOLUME_MA" in indicators and indicators["VOLUME_MA"] is not None:
             vol = indicators["VOLUME_MA"]
             if vol.get("above_average", False):
-                if buy_signals > sell_signals:
-                    buy_signals += 1
+                if buy_score > sell_score:
+                    buy_score += indicator_configs["VOLUME_MA"].weight
                     details.append("Volume: Above average (Confirms direction)")
-                elif sell_signals > buy_signals:
-                    sell_signals += 1
+                elif sell_score > buy_score:
+                    sell_score += indicator_configs["VOLUME_MA"].weight
                     details.append("Volume: Above average (Confirms direction)")
 
         # MFI
         if "MFI" in indicators and indicators["MFI"] is not None:
             mfi = indicators["MFI"]
-            if mfi < 20:
-                buy_signals += 1
+            mfi_oversold = indicator_configs["MFI"].parameters.get("oversold", 20)
+            mfi_overbought = indicator_configs["MFI"].parameters.get("overbought", 80)
+            if mfi < mfi_oversold:
+                buy_score += indicator_configs["MFI"].weight
                 details.append(f"MFI: {mfi:.1f} Oversold (Buy)")
-            elif mfi > 80:
-                sell_signals += 1
+            elif mfi > mfi_overbought:
+                sell_score += indicator_configs["MFI"].weight
                 details.append(f"MFI: {mfi:.1f} Overbought (Sell)")
 
-        # Determine direction
-        total_signals = buy_signals + sell_signals
-        if buy_signals > sell_signals and buy_signals >= 6:
-            return "BUY", buy_signals, details
-        elif sell_signals > buy_signals and sell_signals >= 6:
-            return "SELL", sell_signals, details
+        # Determine direction based on weighted scores
+        total_score = buy_score + sell_score
+        # Use a threshold for minimum score to generate a signal
+        # This threshold should be configurable, for now, let\'s use a sum of weights for 6 indicators as a baseline
+        # Get min_indicators from config, or default to 6
+        from app.services.excel_manager import excel_manager
+        config = excel_manager.get_config()
+        min_indicators = config.get("parameters", {}).get("min_indicators", 6)
+        
+        # Calculate max possible score
+        max_possible_score = sum(ind.weight for ind in self.indicators if ind.enabled)
+        
+        # Calculate threshold based on min_indicators ratio
+        min_score_for_signal = max_possible_score * (min_indicators / len(self.indicators))
+
+        # Calculate how many indicators actually triggered for the winning side
+        indicators_met = len([d for d in details if ("Buy" in d or "Bullish" in d)]) if buy_score > sell_score else len([d for d in details if ("Sell" in d or "Bearish" in d)])
+
+        if buy_score > sell_score and buy_score >= min_score_for_signal:
+            return "BUY", indicators_met, details
+        elif sell_score > buy_score and sell_score >= min_score_for_signal:
+            return "SELL", indicators_met, details
         else:
-            return "NEUTRAL", max(buy_signals, sell_signals), details
+            return "NEUTRAL", indicators_met, details
 
     # --- Individual indicator calculations ---
 

@@ -83,9 +83,20 @@ class SignalEngine:
             if direction == "NEUTRAL" or indicators_met < self.MIN_INDICATORS_FOR_SIGNAL:
                 return None
 
+            # Session Filter: Only trade during London or NY sessions (approx 07:00 - 17:00 UTC)
+            # This reduces false breakouts during Asian session consolidation
+            current_hour = datetime.utcnow().hour
+            if current_hour < 7 or current_hour > 17:
+                # Allow trading if user explicitly disabled session filter in config, otherwise block
+                config = excel_manager.get_config()
+                if config.get("parameters", {}).get("strict_session_filter", True):
+                    logger.info(f"Signal for {asset} rejected: Outside institutional sessions (London/NY).")
+                    return None
+
             # Validate with structural timeframe
             structural_confirmed = await self._validate_structural(asset, direction)
             if not structural_confirmed:
+                logger.info(f"Signal for {asset} rejected: Failed structural validation.")
                 return None
 
             # Generate signal
@@ -140,8 +151,68 @@ class SignalEngine:
             contract_size = pip_info["contract_size"]
             quote_currency = pip_info["quote_currency"]
 
-            # 1. Calculate Stop Loss using ATR (1.5x ATR)
+            # 1. Calculate Stop Loss using ATR (1.5x ATR) as a baseline
             sl_distance = atr * 1.5
+
+            # Advanced SL adjustment based on SMC structures
+            # Look for recent swing high/low or FVG that offers better protection
+            if df is not None:
+                last_candle_close = df["close"].iloc[-1]
+                last_candle_low = df["low"].iloc[-1]
+                last_candle_high = df["high"].iloc[-1]
+
+                # Get FVG and Liquidity from indicator_service (already calculated in analyze_asset)
+                fvgs = indicator_service.detect_fvg(df)
+                liquidity = indicator_service.detect_liquidity(df)
+
+                if direction == SignalDirection.BUY:
+                    # For BUY, look for nearest bullish FVG below entry or recent swing low
+                    potential_sls = []
+                    # Add ATR-based SL
+                    potential_sls.append(entry_price - sl_distance)
+
+                    # Add bullish FVG lower bounds below entry
+                    for fvg in fvgs:
+                        if fvg["type"] == "BULLISH" and fvg["price"] < entry_price:
+                            potential_sls.append(fvg["price"] - (pip_size * 5)) # 5 pips below FVG for buffer
+                    
+                    # Add recent swing lows (SSL zones) below entry
+                    for ssl_zone in liquidity["SSL"]:
+                        if ssl_zone < entry_price:
+                            potential_sls.append(ssl_zone - (pip_size * 5)) # 5 pips below SSL for buffer
+
+                    # Choose the highest (closest to entry) potential SL for a BUY signal
+                    if potential_sls:
+                        stop_loss = max(potential_sls)
+                    else:
+                        stop_loss = entry_price - sl_distance # Fallback to ATR SL
+
+                else: # SELL direction
+                    # For SELL, look for nearest bearish FVG above entry or recent swing high
+                    potential_sls = []
+                    # Add ATR-based SL
+                    potential_sls.append(entry_price + sl_distance)
+
+                    # Add bearish FVG upper bounds above entry
+                    for fvg in fvgs:
+                        if fvg["type"] == "BEARISH" and fvg["price"] > entry_price:
+                            potential_sls.append(fvg["price"] + (pip_size * 5)) # 5 pips above FVG for buffer
+
+                    # Add recent swing highs (BSL zones) above entry
+                    for bsl_zone in liquidity["BSL"]:
+                        if bsl_zone > entry_price:
+                            potential_sls.append(bsl_zone + (pip_size * 5)) # 5 pips above BSL for buffer
+
+                    # Choose the lowest (closest to entry) potential SL for a SELL signal
+                    if potential_sls:
+                        stop_loss = min(potential_sls)
+                    else:
+                        stop_loss = entry_price + sl_distance # Fallback to ATR SL
+
+                # Recalculate sl_distance based on the new stop_loss
+                sl_distance = abs(entry_price - stop_loss)
+
+            # --- Apply Minimum Stop Loss Limits ---
             
             # --- Apply Minimum Stop Loss Limits ---
             is_index_or_gold = any(x in asset.upper() for x in ["XAU", "US30", "US100", "US500", "DAX", "DJI", "NDX", "SPX"])
@@ -331,17 +402,28 @@ class SignalEngine:
                     if atr_sma.iloc[-1] <= atr_sma.iloc[-2]:
                         return False
 
-            # General structural validation
+            # General structural validation (Strict Trend Filter)
             for tf in self.ANALYSIS_TIMEFRAMES:
                 df = await market_data_service.get_time_series(asset, interval=tf, outputsize=100)
                 if df is None or df.empty:
                     continue
+                
+                # 1. Price vs EMA 200 (Long term trend)
                 ema200 = df["close"].ewm(span=200, adjust=False).mean()
-                if len(ema200) > 0:
-                    if direction == "BUY" and df["close"].iloc[-1] < ema200.iloc[-1]:
-                        return False
-                    if direction == "SELL" and df["close"].iloc[-1] > ema200.iloc[-1]:
-                        return False
+                # 2. Price vs EMA 50 (Medium term trend)
+                ema50 = df["close"].ewm(span=50, adjust=False).mean()
+                
+                if len(ema200) > 0 and len(ema50) > 0:
+                    current_price = df["close"].iloc[-1]
+                    
+                    if direction == "BUY":
+                        # Strict Bullish: Price > EMA50 > EMA200
+                        if current_price < ema200.iloc[-1] or current_price < ema50.iloc[-1] or ema50.iloc[-1] < ema200.iloc[-1]:
+                            return False
+                    if direction == "SELL":
+                        # Strict Bearish: Price < EMA50 < EMA200
+                        if current_price > ema200.iloc[-1] or current_price > ema50.iloc[-1] or ema50.iloc[-1] > ema200.iloc[-1]:
+                            return False
             return True
         except:
             return True

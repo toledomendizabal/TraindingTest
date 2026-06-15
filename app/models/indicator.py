@@ -43,7 +43,7 @@ DEFAULT_INDICATORS = [
         name="PARABOLIC_SAR",
         category="trend",
         parameters={"step": 0.02, "max_step": 0.2},
-        weight=1.0
+        weight=0.8 # Reduced weight, can be noisy in choppy markets
     ),
     IndicatorConfig(
         name="ICHIMOKU",
@@ -54,20 +54,20 @@ DEFAULT_INDICATORS = [
     IndicatorConfig(
         name="ADX_DMI",
         category="trend",
-        parameters={"period": 14, "threshold": 25},
+        parameters={"period": 14, "threshold": 30}, # Increased threshold for stronger trend confirmation
         weight=1.2
     ),
     # Momentum Indicators (Layer 3 - Triggers)
     IndicatorConfig(
         name="RSI",
         category="momentum",
-        parameters={"period": 14, "overbought": 70, "oversold": 30},
+        parameters={"period": 14, "overbought": 75, "oversold": 25}, # Stricter overbought/oversold levels
         weight=1.3
     ),
     IndicatorConfig(
         name="STOCHASTIC",
         category="momentum",
-        parameters={"k_period": 14, "d_period": 3, "slowing": 3, "overbought": 80, "oversold": 20},
+        parameters={"k_period": 14, "d_period": 3, "slowing": 3, "overbought": 85, "oversold": 15}, # Stricter overbought/oversold levels
         weight=1.0
     ),
     IndicatorConfig(
