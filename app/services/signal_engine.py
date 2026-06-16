@@ -15,9 +15,10 @@ from app.services.excel_manager import excel_manager
 class SignalEngine:
     """Engine for generating trading signals based on 18 indicators confluence."""
 
-    MIN_INDICATORS_FOR_SIGNAL = 8
+    MIN_INDICATORS_FOR_SIGNAL = 11
     ANALYSIS_TIMEFRAMES = ["30m", "1h"]
     SIGNAL_TIMEFRAME = "5m"
+    ATR_SL_MULTIPLIER = 2.0 # CAMBIO 17: Centralized ATR SL multiplier
 
     def __init__(self):
         self.active_signals: Dict[str, Signal] = {}
@@ -75,6 +76,32 @@ class SignalEngine:
             if df is None or df.empty:
                 return None
 
+            # CAMBIO 16: Filtro de spread máximo
+            price_data = await market_data_service.get_price(asset)
+            spread = 0.0
+            if price_data and "ask" in price_data and "bid" in price_data:
+                spread = abs(price_data["ask"] - price_data["bid"])
+
+            pip_info = Asset.get_pip_info(asset)
+            pip_size = pip_info["pip_size"]
+            current_spread_pips = round(spread / pip_size, 1)
+
+            max_spread_pips = {
+                "XAU": 4.0,
+                "US30": 8.0,
+                "US100": 8.0,
+                "US500": 8.0,
+                "DAX": 10.0,
+                "GER40": 10.0,
+                "DJI": 8.0,
+                "NDX": 8.0,
+                "SPX": 8.0,
+            }.get(asset.upper().split("USD")[0], 3.0) # Default 3.0 for FX pairs
+
+            if current_spread_pips > max_spread_pips:
+                logger.info(f"Signal for {asset} rejected: Spread ({current_spread_pips} pips) exceeds max allowed ({max_spread_pips} pips).")
+                return None
+
             indicators = indicator_service.calculate_all(df)
             if not indicators:
                 return None
@@ -86,12 +113,11 @@ class SignalEngine:
             # Session Filter: Only trade during London or NY sessions (approx 07:00 - 17:00 UTC)
             # This reduces false breakouts during Asian session consolidation
             current_hour = datetime.utcnow().hour
-            if current_hour < 7 or current_hour > 17:
-                # Allow trading if user explicitly disabled session filter in config, otherwise block
-                config = excel_manager.get_config()
-                if config.get("parameters", {}).get("strict_session_filter", True):
-                    logger.info(f"Signal for {asset} rejected: Outside institutional sessions (London/NY).")
-                    return None
+            # CAMBIO 14: Filtro de sesión - Ventana temporal 07:00-12:00 y 13:00-17:00 UTC
+            # CAMBIO 15: Filtro de sesión - Fallo silencioso (hardcodeado)
+            if not ((7 <= current_hour < 12) or (13 <= current_hour < 17)):
+                logger.info(f"Signal for {asset} rejected: Outside institutional sessions (London/NY). Current hour: {current_hour} UTC")
+                return None
 
             # Validate with structural timeframe
             structural_confirmed = await self._validate_structural(asset, direction)
@@ -103,11 +129,7 @@ class SignalEngine:
             current_price = df["close"].iloc[-1]
             atr_value = indicators.get("ATR", 0)
             
-            # Get current spread
-            price_data = await market_data_service.get_price(asset)
-            spread = 0.0
-            if price_data and "ask" in price_data and "bid" in price_data:
-                spread = abs(price_data["ask"] - price_data["bid"])
+
 
             signal = await self._create_signal(
                 asset=asset,
@@ -116,7 +138,7 @@ class SignalEngine:
                 atr=atr_value if atr_value else current_price * 0.001,
                 indicators_met=indicators_met,
                 details=details,
-                spread=spread,
+                spread=spread, # Pass the calculated spread
                 df=df
             )
 
@@ -151,8 +173,8 @@ class SignalEngine:
             contract_size = pip_info["contract_size"]
             quote_currency = pip_info["quote_currency"]
 
-            # 1. Calculate Stop Loss using ATR (1.5x ATR) as a baseline
-            sl_distance = atr * 1.5
+            # 1. Calculate Stop Loss using ATR (ATR_SL_MULTIPLIER x ATR) as a baseline
+            sl_distance = atr * self.ATR_SL_MULTIPLIER
 
             # Advanced SL adjustment based on SMC structures
             # Look for recent swing high/low or FVG that offers better protection
@@ -181,11 +203,24 @@ class SignalEngine:
                         if ssl_zone < entry_price:
                             potential_sls.append(ssl_zone - (pip_size * 5)) # 5 pips below SSL for buffer
 
-                    # Choose the highest (closest to entry) potential SL for a BUY signal
+                    # CAMBIO 18: BUG en lógica de Stop Loss con SMC (CRÍTICO)
+                    # Elegir el SL más cercano al precio de entrada (el más alto para BUY)
                     if potential_sls:
-                        stop_loss = max(potential_sls)
+                        # Convertir los precios de SL a distancias desde el entry_price
+                        sl_distances_from_smc = [entry_price - sl for sl in potential_sls if sl < entry_price]
+                        if sl_distances_from_smc:
+                            # Elegir la menor distancia (SL más cercano al entry) para que sea el más alto en precio
+                            sl_distance_smc = min(sl_distances_from_smc)
+                            # Asegurar que el SL SMC sea al menos 1.5x ATR (o el ATR_SL_MULTIPLIER actual)
+                            if sl_distance_smc > (atr * 1.5): # Usar 1.5x ATR como mínimo para SMC SL
+                                sl_distance = sl_distance_smc
+                            else:
+                                sl_distance = atr * self.ATR_SL_MULTIPLIER # Fallback a ATR si SMC SL es muy pequeño
+                        else:
+                            sl_distance = atr * self.ATR_SL_MULTIPLIER # Fallback a ATR si no hay SMC SL válidos
                     else:
-                        stop_loss = entry_price - sl_distance # Fallback to ATR SL
+                        sl_distance = atr * self.ATR_SL_MULTIPLIER # Fallback a ATR si no hay SMC SL
+                    stop_loss = entry_price - sl_distance
 
                 else: # SELL direction
                     # For SELL, look for nearest bearish FVG above entry or recent swing high
@@ -203,14 +238,26 @@ class SignalEngine:
                         if bsl_zone > entry_price:
                             potential_sls.append(bsl_zone + (pip_size * 5)) # 5 pips above BSL for buffer
 
-                    # Choose the lowest (closest to entry) potential SL for a SELL signal
+                    # CAMBIO 18: BUG en lógica de Stop Loss con SMC (CRÍTICO)
+                    # Elegir el SL más cercano al precio de entrada (el más bajo para SELL)
                     if potential_sls:
-                        stop_loss = min(potential_sls)
+                        # Convertir los precios de SL a distancias desde el entry_price
+                        sl_distances_from_smc = [sl - entry_price for sl in potential_sls if sl > entry_price]
+                        if sl_distances_from_smc:
+                            # Elegir la menor distancia (SL más cercano al entry) para que sea el más bajo en precio
+                            sl_distance_smc = min(sl_distances_from_smc)
+                            # Asegurar que el SL SMC sea al menos 1.5x ATR (o el ATR_SL_MULTIPLIER actual)
+                            if sl_distance_smc > (atr * 1.5): # Usar 1.5x ATR como mínimo para SMC SL
+                                sl_distance = sl_distance_smc
+                            else:
+                                sl_distance = atr * self.ATR_SL_MULTIPLIER # Fallback a ATR si SMC SL es muy pequeño
+                        else:
+                            sl_distance = atr * self.ATR_SL_MULTIPLIER # Fallback a ATR si no hay SMC SL válidos
                     else:
-                        stop_loss = entry_price + sl_distance # Fallback to ATR SL
+                        sl_distance = atr * self.ATR_SL_MULTIPLIER # Fallback a ATR si no hay SMC SL
+                    stop_loss = entry_price + sl_distance
 
-                # Recalculate sl_distance based on the new stop_loss
-                sl_distance = abs(entry_price - stop_loss)
+
 
             # --- Apply Minimum Stop Loss Limits ---
             
@@ -232,10 +279,10 @@ class SignalEngine:
             if direction == SignalDirection.BUY:
                 stop_loss = entry_price - sl_distance
                 
-                # Default Fibonacci targets
-                tp1 = entry_price + (sl_distance * 3)
-                tp2 = entry_price + (sl_distance * 6)
-                tp3 = entry_price + (sl_distance * 10)
+                # Default Fibonacci targets (CAMBIO 19 y 20)
+                tp1 = entry_price + (sl_distance * 1.8)
+                tp2 = entry_price + (sl_distance * 3.5)
+                tp3 = entry_price + (sl_distance * 6.0) # Reduced TP3 as well for realism
                 
                 # Adjust TP with Bearish FVGs (Resistance) and BSL (Liquidity)
                 bearish_fvgs = [f["price"] for f in fvgs if f["type"] == "BEARISH" and f["price"] > entry_price]
@@ -248,10 +295,10 @@ class SignalEngine:
             else:
                 stop_loss = entry_price + sl_distance
                 
-                # Default Fibonacci targets
-                tp1 = entry_price - (sl_distance * 3)
-                tp2 = entry_price - (sl_distance * 6)
-                tp3 = entry_price - (sl_distance * 10)
+                # Default Fibonacci targets (CAMBIO 19 y 20)
+                tp1 = entry_price - (sl_distance * 1.8)
+                tp2 = entry_price - (sl_distance * 3.5)
+                tp3 = entry_price - (sl_distance * 6.0) # Reduced TP3 as well for realism
                 
                 # Adjust TP with Bullish FVGs (Support) and SSL (Liquidity)
                 bullish_fvgs = [f["price"] for f in fvgs if f["type"] == "BULLISH" and f["price"] < entry_price]

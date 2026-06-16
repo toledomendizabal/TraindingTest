@@ -19,13 +19,13 @@ DEFAULT_INDICATORS = [
         name="EMA_200",
         category="trend",
         parameters={"period": 200, "source": "close"},
-        weight=1.5
+        weight=2.0
     ),
     IndicatorConfig(
         name="EMA_50",
         category="trend",
         parameters={"period": 50, "source": "close"},
-        weight=1.2
+        weight=1.5
     ),
     IndicatorConfig(
         name="EMA_20",
@@ -37,13 +37,13 @@ DEFAULT_INDICATORS = [
         name="EMA_9",
         category="trend",
         parameters={"period": 9, "source": "close"},
-        weight=1.0
+        weight=0.8
     ),
     IndicatorConfig(
         name="PARABOLIC_SAR",
         category="trend",
         parameters={"step": 0.02, "max_step": 0.2},
-        weight=0.8 # Reduced weight, can be noisy in choppy markets
+        weight=0.6 # Reduced weight, can be noisy in choppy markets
     ),
     IndicatorConfig(
         name="ICHIMOKU",
@@ -54,14 +54,14 @@ DEFAULT_INDICATORS = [
     IndicatorConfig(
         name="ADX_DMI",
         category="trend",
-        parameters={"period": 14, "threshold": 30}, # Increased threshold for stronger trend confirmation
+        parameters={"period": 14, "threshold": 28}, # Increased threshold for stronger trend confirmation
         weight=1.2
     ),
     # Momentum Indicators (Layer 3 - Triggers)
     IndicatorConfig(
         name="RSI",
         category="momentum",
-        parameters={"period": 14, "overbought": 75, "oversold": 25}, # Stricter overbought/oversold levels
+        parameters={"period": 14, "overbought": 72, "oversold": 28}, # Stricter overbought/oversold levels
         weight=1.3
     ),
     IndicatorConfig(
@@ -74,12 +74,12 @@ DEFAULT_INDICATORS = [
         name="MACD",
         category="momentum",
         parameters={"fast": 12, "slow": 26, "signal": 9},
-        weight=1.3
+        weight=1.5
     ),
     IndicatorConfig(
         name="CCI",
         category="momentum",
-        parameters={"period": 20, "upper": 100, "lower": -100},
+        parameters={"period": 20, "upper": 120, "lower": -120},
         weight=1.0
     ),
     IndicatorConfig(
@@ -104,7 +104,7 @@ DEFAULT_INDICATORS = [
     IndicatorConfig(
         name="KELTNER_CHANNELS",
         category="volatility",
-        parameters={"ema_period": 20, "atr_multiplier": 2},
+        parameters={"ema_period": 20, "atr_multiplier": 1.5},
         weight=1.0
     ),
     IndicatorConfig(
