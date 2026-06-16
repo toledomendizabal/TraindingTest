@@ -212,7 +212,7 @@ class SignalEngine:
                             # Elegir la menor distancia (SL más cercano al entry) para que sea el más alto en precio
                             sl_distance_smc = min(sl_distances_from_smc)
                             # Asegurar que el SL SMC sea al menos 1.5x ATR (o el ATR_SL_MULTIPLIER actual)
-                            if sl_distance_smc > (atr * 1.5): # Usar 1.5x ATR como mínimo para SMC SL
+                            if sl_distance_smc > (atr * self.ATR_SL_MULTIPLIER): # Usar ATR_SL_MULTIPLIER como mínimo para SMC SL
                                 sl_distance = sl_distance_smc
                             else:
                                 sl_distance = atr * self.ATR_SL_MULTIPLIER # Fallback a ATR si SMC SL es muy pequeño
@@ -247,7 +247,7 @@ class SignalEngine:
                             # Elegir la menor distancia (SL más cercano al entry) para que sea el más bajo en precio
                             sl_distance_smc = min(sl_distances_from_smc)
                             # Asegurar que el SL SMC sea al menos 1.5x ATR (o el ATR_SL_MULTIPLIER actual)
-                            if sl_distance_smc > (atr * 1.5): # Usar 1.5x ATR como mínimo para SMC SL
+                            if sl_distance_smc > (atr * self.ATR_SL_MULTIPLIER): # Usar ATR_SL_MULTIPLIER como mínimo para SMC SL
                                 sl_distance = sl_distance_smc
                             else:
                                 sl_distance = atr * self.ATR_SL_MULTIPLIER # Fallback a ATR si SMC SL es muy pequeño
@@ -432,12 +432,14 @@ class SignalEngine:
                     # Simple ADX calculation or from indicators service
                     from app.services.indicators import indicator_service
                     ind = indicator_service.calculate_all(df_5m)
-                    if ind.get("ADX", 0) <= 25:
+                    adx_data = ind.get("ADX_DMI") or {}
+                    if adx_data.get("adx", 0) <= 25:
                         return False
-                    
+
                     # 3. MACD aligned
-                    macd = ind.get("MACD", 0)
-                    signal_macd = ind.get("MACD_Signal", 0)
+                    macd_data = ind.get("MACD") or {}
+                    macd = macd_data.get("macd", 0)
+                    signal_macd = macd_data.get("signal", 0)
                     if direction == "BUY" and macd <= signal_macd:
                         return False
                     if direction == "SELL" and macd >= signal_macd:
@@ -449,31 +451,38 @@ class SignalEngine:
                     if atr_sma.iloc[-1] <= atr_sma.iloc[-2]:
                         return False
 
-            # General structural validation (Strict Trend Filter)
+            # General structural validation (Trend Filter con al menos
+            # 1 de 2 timeframes mayores confirmando, no ambos obligatorios)
+            confirmations = 0
+            timeframes_evaluated = 0
+
             for tf in self.ANALYSIS_TIMEFRAMES:
                 df = await market_data_service.get_time_series(asset, interval=tf, outputsize=100)
                 if df is None or df.empty:
                     continue
-                
-                # 1. Price vs EMA 200 (Long term trend)
+
+                timeframes_evaluated += 1
+
                 ema200 = df["close"].ewm(span=200, adjust=False).mean()
-                # 2. Price vs EMA 50 (Medium term trend)
                 ema50 = df["close"].ewm(span=50, adjust=False).mean()
-                
+
                 if len(ema200) > 0 and len(ema50) > 0:
                     current_price = df["close"].iloc[-1]
-                    
+
                     if direction == "BUY":
-                        # Strict Bullish: Price > EMA50 > EMA200
-                        if current_price < ema200.iloc[-1] or current_price < ema50.iloc[-1] or ema50.iloc[-1] < ema200.iloc[-1]:
-                            return False
+                        if current_price > ema50.iloc[-1] > ema200.iloc[-1]:
+                            confirmations += 1
                     if direction == "SELL":
-                        # Strict Bearish: Price < EMA50 < EMA200
-                        if current_price > ema200.iloc[-1] or current_price > ema50.iloc[-1] or ema50.iloc[-1] > ema200.iloc[-1]:
-                            return False
-            return True
-        except:
-            return True
+                        if current_price < ema50.iloc[-1] < ema200.iloc[-1]:
+                            confirmations += 1
+
+            if timeframes_evaluated == 0:
+                return False  # sin datos, no se puede confirmar: descartar
+
+            return confirmations >= 1
+        except Exception as e:
+            logger.error(f"Error en validación estructural: {e}")
+            return False
 
     def _has_active_signal(self, asset: str) -> bool:
         for signal in self.active_signals.values():

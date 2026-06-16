@@ -248,18 +248,17 @@ class IndicatorService:
                 sell_score += indicator_configs["MFI"].weight
                 details.append(f"MFI: {mfi:.1f} Overbought (Sell)")
 
-        # Determine direction based on weighted scores
-        total_score = buy_score + sell_score
-        # Use a threshold for minimum score to generate a signal
-        # This threshold should be configurable, for now, let\'s use a sum of weights for 6 indicators as a baseline
-        # Get min_indicators from config, or default to 6
-        from app.services.excel_manager import excel_manager
-        config = excel_manager.get_config()
-        min_indicators = config.get("parameters", {}).get("min_indicators", 6)
-        
+        # Determine direction based on weighted scores.
+        # IMPORTANTE: la fuente de verdad del umbral mínimo es
+        # SignalEngine.MIN_INDICATORS_FOR_SIGNAL (definida en signal_engine.py),
+        # NO el archivo Excel. Esto evita que ambos sistemas queden
+        # desincronizados entre sí.
+        from app.services.signal_engine import SignalEngine
+        min_indicators = SignalEngine.MIN_INDICATORS_FOR_SIGNAL
+
         # Calculate max possible score
         max_possible_score = sum(ind.weight for ind in self.indicators if ind.enabled)
-        
+
         # Calculate threshold based on min_indicators ratio
         min_score_for_signal = max_possible_score * (min_indicators / len(self.indicators))
 
