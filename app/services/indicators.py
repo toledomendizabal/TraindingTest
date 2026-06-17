@@ -516,13 +516,18 @@ class IndicatorService:
     def _calc_keltner(self, df: pd.DataFrame) -> Optional[Dict]:
         """Calculate Keltner Channels."""
         try:
+            # Get multiplier from config or default to 1.5
+            from app.models.indicator import DEFAULT_INDICATORS
+            kc_config = next((ind for ind in DEFAULT_INDICATORS if ind.name == "KELTNER_CHANNELS"), None)
+            multiplier = kc_config.parameters.get("atr_multiplier", 1.5) if kc_config else 1.5
+
             ema20 = df["close"].ewm(span=20, adjust=False).mean()
             atr = self._calc_atr_series(df, 14)
 
             return {
-                "upper": float(ema20.iloc[-1] + 2 * atr.iloc[-1]),
+                "upper": float(ema20.iloc[-1] + multiplier * atr.iloc[-1]),
                 "middle": float(ema20.iloc[-1]),
-                "lower": float(ema20.iloc[-1] - 2 * atr.iloc[-1]),
+                "lower": float(ema20.iloc[-1] - multiplier * atr.iloc[-1]),
             }
         except Exception:
             return None
@@ -553,8 +558,13 @@ class IndicatorService:
             current_vol = df["volume"].iloc[-1]
             ratio = current_vol / vol_ma.iloc[-1] if vol_ma.iloc[-1] > 0 else 1.0
 
+            # Get threshold from config or default to 1.3
+            from app.models.indicator import DEFAULT_INDICATORS
+            vol_config = next((ind for ind in DEFAULT_INDICATORS if ind.name == "VOLUME_MA"), None)
+            threshold = vol_config.parameters.get("threshold", 1.3) if vol_config else 1.3
+
             return {
-                "above_average": ratio > 1.2,
+                "above_average": ratio > threshold,
                 "ratio": float(ratio),
             }
         except Exception:

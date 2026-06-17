@@ -81,6 +81,10 @@ class SignalEngine:
             spread = 0.0
             if price_data and "ask" in price_data and "bid" in price_data:
                 spread = abs(price_data["ask"] - price_data["bid"])
+            else:
+                # If ask/bid not available, assume spread is 0 to avoid blocking signals unnecessarily
+                # unless it's a critical error, in which case spread remains 0.0
+                spread = 0.0
 
             pip_info = Asset.get_pip_info(asset)
             pip_size = pip_info["pip_size"]
