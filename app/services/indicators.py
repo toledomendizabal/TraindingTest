@@ -147,18 +147,33 @@ class IndicatorService:
             elif rsi > rsi_overbought:
                 sell_score += indicator_configs["RSI"].weight
                 details.append(f"RSI: {rsi:.1f} Overbought (Sell)")
+            # Trend confirmation: RSI in bullish territory but not overbought
+            elif 50 < rsi < rsi_overbought:
+                buy_score += indicator_configs["RSI"].weight * 0.5
+                details.append(f"RSI: {rsi:.1f} Bullish Momentum")
+            elif rsi_oversold < rsi < 50:
+                sell_score += indicator_configs["RSI"].weight * 0.5
+                details.append(f"RSI: {rsi:.1f} Bearish Momentum")
 
         # Stochastic
         if "STOCHASTIC" in indicators and indicators["STOCHASTIC"] is not None:
             stoch = indicators["STOCHASTIC"]
             stoch_oversold = indicator_configs["STOCHASTIC"].parameters.get("oversold", 20)
             stoch_overbought = indicator_configs["STOCHASTIC"].parameters.get("overbought", 80)
-            if stoch.get("k", 50) < stoch_oversold and stoch.get("d", 50) < stoch_oversold:
+            k, d = stoch.get("k", 50), stoch.get("d", 50)
+            if k < stoch_oversold and d < stoch_oversold:
                 buy_score += indicator_configs["STOCHASTIC"].weight
                 details.append("Stochastic: Oversold (Buy)")
-            elif stoch.get("k", 50) > stoch_overbought and stoch.get("d", 50) > stoch_overbought:
+            elif k > stoch_overbought and d > stoch_overbought:
                 sell_score += indicator_configs["STOCHASTIC"].weight
                 details.append("Stochastic: Overbought (Sell)")
+            # Bullish cross in neutral zone
+            elif k > d and k < stoch_overbought:
+                buy_score += indicator_configs["STOCHASTIC"].weight * 0.5
+                details.append("Stochastic: Bullish Cross")
+            elif k < d and k > stoch_oversold:
+                sell_score += indicator_configs["STOCHASTIC"].weight * 0.5
+                details.append("Stochastic: Bearish Cross")
 
         # MACD
         if "MACD" in indicators and indicators["MACD"] is not None:
@@ -181,6 +196,12 @@ class IndicatorService:
             elif cci > cci_overbought:
                 sell_score += indicator_configs["CCI"].weight
                 details.append(f"CCI: {cci:.1f} Overbought (Sell)")
+            elif 0 < cci < cci_overbought:
+                buy_score += indicator_configs["CCI"].weight * 0.5
+                details.append(f"CCI: {cci:.1f} Bullish Momentum")
+            elif cci_oversold < cci < 0:
+                sell_score += indicator_configs["CCI"].weight * 0.5
+                details.append(f"CCI: {cci:.1f} Bearish Momentum")
 
         # Awesome Oscillator
         if "AWESOME_OSCILLATOR" in indicators and indicators["AWESOME_OSCILLATOR"] is not None:

@@ -15,7 +15,7 @@ from app.services.excel_manager import excel_manager
 class SignalEngine:
     """Engine for generating trading signals based on 18 indicators confluence."""
 
-    MIN_INDICATORS_FOR_SIGNAL = 11
+    MIN_INDICATORS_FOR_SIGNAL = 6
     ANALYSIS_TIMEFRAMES = ["30m", "1h"]
     SIGNAL_TIMEFRAME = "5m"
     ATR_SL_MULTIPLIER = 2.0 # CAMBIO 17: Centralized ATR SL multiplier
