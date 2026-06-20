@@ -12,7 +12,7 @@ class Settings(BaseSettings):
     TELEGRAM_CHAT_ID: str = ""
 
     # Twelve Data API
-    TWELVE_DATA_API_KEY: str = ""
+    TWELVE_DATA_API_KEY: str = "e046f5d7b689457fb44308ef76dc434c"
 
     # Trading Configuration
     INITIAL_CAPITAL: float = 10000.0
@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     CONFIG_DIR: str = ""
 
     # MetaTrader Integration
-    MT4_FILES_PATH: str = "C:\\Users\\USUARIO\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files"
+    MT4_FILES_PATH: str = os.getenv("MT4_FILES_PATH", "")
     MT4_SYNC_ENABLED: bool = True
 
     # Active Assets

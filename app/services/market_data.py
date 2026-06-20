@@ -40,6 +40,7 @@ class MarketDataService:
         self._request_times: List[float] = []
         self._max_requests_per_minute = 7
         self._rate_lock = asyncio.Lock()
+        self._max_cache_size = 100 # Limit cache size to prevent RAM bloat
 
     async def get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
@@ -86,12 +87,15 @@ class MarketDataService:
 
     async def get_price(self, asset: str) -> Optional[Dict]:
         """Get current price prioritizing MT4 then API."""
-        # 1. Try MT4 (Real-time)
-        mt4_price = self._get_mt4_price(asset)
-        if mt4_price:
-            self._price_cache[asset] = mt4_price
-            self._last_update[asset] = datetime.now()
-            return mt4_price
+        # 1. Try MT4 (Real-time) only if path is configured
+        mt4_price = None
+        if settings.MT4_FILES_PATH:
+            mt4_price = self._get_mt4_price(asset)
+            if mt4_price:
+                self._price_cache[asset] = mt4_price
+                self._last_update[asset] = datetime.now()
+                self._cleanup_cache()
+                return mt4_price
 
         # 2. Try Cache
         cached = self.get_cached_price(asset)
@@ -104,10 +108,13 @@ class MarketDataService:
             client = await self.get_client()
             symbol = self._get_symbol(asset)
 
+            logger.debug(f"[DEBUG] Calling Twelve Data API for price: {symbol}")
             response = await client.get(
                 f"{self.BASE_URL}/price",
                 params={"symbol": symbol, "apikey": self.api_key}
             )
+            logger.debug(f"[DEBUG] Twelve Data API price response status: {response.status_code}")
+            logger.debug(f"[DEBUG] Twelve Data API price response body: {response.text}")
 
             if response.status_code == 200:
                 data = response.json()
@@ -120,6 +127,7 @@ class MarketDataService:
                     }
                     self._price_cache[asset] = price_data
                     self._last_update[asset] = datetime.now()
+                    self._cleanup_cache()
                     return price_data
             
             return self._price_cache.get(asset)
@@ -134,28 +142,29 @@ class MarketDataService:
         outputsize: int = 200
     ) -> Optional[pd.DataFrame]:
         """Get historical data prioritizing MT4 history files."""
-        # 1. Try MT4 History File
-        try:
-            # Match the MQ5 logic: StringReplace(safe_symbol, "/", "");
-            clean_symbol = asset.upper().replace("/", "").replace("\\", "")
-            history_file = os.path.join(settings.MT4_FILES_PATH, f"history_{clean_symbol}.csv")
-            
-            logger.debug(f"Searching MT4 history at: {history_file}")
-            
-            if os.path.exists(history_file):
-                df = pd.read_csv(history_file)
-                df["datetime"] = pd.to_datetime(df["datetime"])
-                df = df.sort_values("datetime").reset_index(drop=True)
+        # 1. Try MT4 History File only if path is configured
+        if settings.MT4_FILES_PATH:
+            try:
+                # Match the MQ5 logic: StringReplace(safe_symbol, "/", "");
+                clean_symbol = asset.upper().replace("/", "").replace("\\", "")
+                history_file = os.path.join(settings.MT4_FILES_PATH, f"history_{clean_symbol}.csv")
                 
-                # Convert numeric columns
-                for col in ["open", "high", "low", "close", "volume"]:
-                    if col in df.columns:
-                        df[col] = pd.to_numeric(df[col], errors="coerce")
+                logger.debug(f"Searching MT4 history at: {history_file}")
                 
-                logger.debug(f"Loaded {len(df)} bars from MT4 history for {asset}")
-                return df
-        except Exception as e:
-            logger.warning(f"Failed to read MT4 history for {asset}: {e}")
+                if os.path.exists(history_file):
+                    df = pd.read_csv(history_file)
+                    df["datetime"] = pd.to_datetime(df["datetime"])
+                    df = df.sort_values("datetime").reset_index(drop=True)
+                    
+                    # Convert numeric columns
+                    for col in ["open", "high", "low", "close", "volume"]:
+                        if col in df.columns:
+                            df[col] = pd.to_numeric(df[col], errors="coerce")
+                    
+                    logger.debug(f"Loaded {len(df)} bars from MT4 history for {asset}")
+                    return df
+            except Exception as e:
+                logger.warning(f"Failed to read MT4 history for {asset}: {e}")
 
         # 2. Backup: Twelve Data API
         try:
@@ -173,6 +182,7 @@ class MarketDataService:
             }
             td_interval = td_map.get(interval, "5min")
 
+            logger.debug(f"[DEBUG] Calling Twelve Data API for time series: {symbol}, interval: {td_interval}")
             response = await client.get(
                 f"{self.BASE_URL}/time_series",
                 params={
@@ -182,6 +192,8 @@ class MarketDataService:
                     "apikey": self.api_key
                 }
             )
+            logger.debug(f"[DEBUG] Twelve Data API time series response status: {response.status_code}")
+            logger.debug(f"[DEBUG] Twelve Data API time series response body: {response.text}")
 
             if response.status_code == 200:
                 data = response.json()
@@ -222,7 +234,20 @@ class MarketDataService:
             last_update = self._last_update.get(asset)
             if last_update and (datetime.now() - last_update).seconds < 30:
                 return self._price_cache[asset]
+            else:
+                # Clean expired cache
+                del self._price_cache[asset]
+                del self._last_update[asset]
         return None
+
+    def _cleanup_cache(self):
+        """Keep cache size under control."""
+        if len(self._price_cache) > self._max_cache_size:
+            # Remove oldest 20%
+            sorted_assets = sorted(self._last_update.items(), key=lambda x: x[1])
+            for asset, _ in sorted_assets[:int(self._max_cache_size * 0.2)]:
+                del self._price_cache[asset]
+                del self._last_update[asset]
 
 
 market_data_service = MarketDataService()

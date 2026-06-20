@@ -67,6 +67,7 @@ class SignalEngine:
     async def analyze_asset(self, asset: str) -> Optional[Signal]:
         try:
             if self._has_active_signal(asset):
+                logger.debug(f"[DEBUG] Active signal found for {asset}. Skipping new signal generation.")
                 return None
 
             df = await market_data_service.get_time_series(
@@ -74,6 +75,7 @@ class SignalEngine:
             )
 
             if df is None or df.empty:
+                logger.debug(f"[DEBUG] No historical data (df) for {asset}. Skipping signal evaluation.")
                 return None
 
             # CAMBIO 16: Filtro de spread máximo
@@ -104,14 +106,17 @@ class SignalEngine:
 
             if current_spread_pips > max_spread_pips:
                 logger.info(f"Signal for {asset} rejected: Spread ({current_spread_pips} pips) exceeds max allowed ({max_spread_pips} pips).")
+                logger.debug(f"[DEBUG] Skipping {asset}: Spread too high ({current_spread_pips} pips).")
                 return None
 
             indicators = indicator_service.calculate_all(df)
             if not indicators:
+                logger.debug(f"[DEBUG] No indicators calculated for {asset}. Skipping signal evaluation.")
                 return None
 
             direction, indicators_met, details = indicator_service.evaluate_signals(df, indicators)
             if direction == "NEUTRAL" or indicators_met < self.MIN_INDICATORS_FOR_SIGNAL:
+                logger.debug(f"[DEBUG] Skipping {asset}: Indicator evaluation NEUTRAL or insufficient indicators met ({indicators_met}/{self.MIN_INDICATORS_FOR_SIGNAL}).")
                 return None
 
             # Session Filter: Only trade during London or NY sessions (approx 07:00 - 17:00 UTC)
@@ -121,12 +126,14 @@ class SignalEngine:
             # CAMBIO 15: Filtro de sesión - Fallo silencioso (hardcodeado)
             if not ((7 <= current_hour < 12) or (13 <= current_hour < 17)):
                 logger.info(f"Signal for {asset} rejected: Outside institutional sessions (London/NY). Current hour: {current_hour} UTC")
+                logger.debug(f"[DEBUG] Skipping {asset}: Outside trading session.")
                 return None
 
             # Validate with structural timeframe
             structural_confirmed = await self._validate_structural(asset, direction)
             if not structural_confirmed:
                 logger.info(f"Signal for {asset} rejected: Failed structural validation.")
+                logger.debug(f"[DEBUG] Skipping {asset}: Structural validation failed.")
                 return None
 
             # Generate signal
@@ -149,6 +156,7 @@ class SignalEngine:
             if signal:
                 self.active_signals[signal.id] = signal
                 await excel_manager.register_signal(signal)
+                logger.debug(f"[DEBUG] Signal successfully generated and registered for {asset}. ID: {signal.id}")
                 try:
                     from app.services.telegram_service import telegram_service
                     await telegram_service.send_signal_notification(signal)
@@ -156,6 +164,7 @@ class SignalEngine:
                     logger.error(f"Telegram error: {e}")
 
             return signal
+            logger.debug(f"[DEBUG] Signal evaluation for {asset} completed.")
         except Exception as e:
             logger.error(f"Error analyzing {asset}: {e}")
             return None

@@ -40,8 +40,11 @@ class IndicatorService:
             # Volatility Indicators
             results["BOLLINGER_BANDS"] = self._calc_bollinger(df)
             results["WILLIAMS_R"] = self._calc_williams_r(df)
-            results["KELTNER_CHANNELS"] = self._calc_keltner(df)
-            results["ATR"] = self._calc_atr(df)
+            
+            # Optimization: Calculate ATR once and reuse it for Keltner
+            atr_series = self._calc_atr_series(df, 14)
+            results["ATR"] = float(atr_series.iloc[-1]) if pd.notna(atr_series.iloc[-1]) else None
+            results["KELTNER_CHANNELS"] = self._calc_keltner(df, atr_series=atr_series)
 
             # Volume Indicators
             results["VOLUME_MA"] = self._calc_volume_ma(df)
@@ -534,16 +537,15 @@ class IndicatorService:
         except Exception:
             return None
 
-    def _calc_keltner(self, df: pd.DataFrame) -> Optional[Dict]:
+    def _calc_keltner(self, df: pd.DataFrame, atr_series: Optional[pd.Series] = None) -> Optional[Dict]:
         """Calculate Keltner Channels."""
         try:
             # Get multiplier from config or default to 1.5
-            from app.models.indicator import DEFAULT_INDICATORS
-            kc_config = next((ind for ind in DEFAULT_INDICATORS if ind.name == "KELTNER_CHANNELS"), None)
+            kc_config = next((ind for ind in self.indicators if ind.name == "KELTNER_CHANNELS"), None)
             multiplier = kc_config.parameters.get("atr_multiplier", 1.5) if kc_config else 1.5
 
             ema20 = df["close"].ewm(span=20, adjust=False).mean()
-            atr = self._calc_atr_series(df, 14)
+            atr = atr_series if atr_series is not None else self._calc_atr_series(df, 14)
 
             return {
                 "upper": float(ema20.iloc[-1] + multiplier * atr.iloc[-1]),
@@ -580,8 +582,7 @@ class IndicatorService:
             ratio = current_vol / vol_ma.iloc[-1] if vol_ma.iloc[-1] > 0 else 1.0
 
             # Get threshold from config or default to 1.3
-            from app.models.indicator import DEFAULT_INDICATORS
-            vol_config = next((ind for ind in DEFAULT_INDICATORS if ind.name == "VOLUME_MA"), None)
+            vol_config = next((ind for ind in self.indicators if ind.name == "VOLUME_MA"), None)
             threshold = vol_config.parameters.get("threshold", 1.3) if vol_config else 1.3
 
             return {
@@ -609,44 +610,60 @@ class IndicatorService:
             return 50.0
 
     def detect_fvg(self, df: pd.DataFrame) -> List[Dict]:
-        """Detect Fair Value Gaps (FVG)."""
-        fvgs = []
+        """Detect Fair Value Gaps (FVG) using vectorized operations."""
         try:
-            for i in range(2, len(df)):
-                # Bullish FVG (Gap between Candle 1 High and Candle 3 Low)
-                if df["low"].iloc[i] > df["high"].iloc[i-2]:
-                    fvgs.append({
-                        "type": "BULLISH",
-                        "top": float(df["low"].iloc[i]),
-                        "bottom": float(df["high"].iloc[i-2]),
-                        "index": i-1,
-                        "price": float((df["low"].iloc[i] + df["high"].iloc[i-2]) / 2)
-                    })
-                # Bearish FVG (Gap between Candle 1 Low and Candle 3 High)
-                elif df["high"].iloc[i] < df["low"].iloc[i-2]:
-                    fvgs.append({
-                        "type": "BEARISH",
-                        "top": float(df["low"].iloc[i-2]),
-                        "bottom": float(df["high"].iloc[i]),
-                        "index": i-1,
-                        "price": float((df["low"].iloc[i-2] + df["high"].iloc[i]) / 2)
-                    })
+            lows = df["low"].values
+            highs = df["high"].values
+            
+            # Bullish FVG: low[i] > high[i-2]
+            bullish_mask = lows[2:] > highs[:-2]
+            bullish_indices = np.where(bullish_mask)[0] + 2
+            
+            # Bearish FVG: high[i] < low[i-2]
+            bearish_mask = highs[2:] < lows[:-2]
+            bearish_indices = np.where(bearish_mask)[0] + 2
+            
+            fvgs = []
+            for i in bullish_indices:
+                fvgs.append({
+                    "type": "BULLISH",
+                    "top": float(lows[i]),
+                    "bottom": float(highs[i-2]),
+                    "index": i-1,
+                    "price": float((lows[i] + highs[i-2]) / 2)
+                })
+            
+            for i in bearish_indices:
+                fvgs.append({
+                    "type": "BEARISH",
+                    "top": float(lows[i-2]),
+                    "bottom": float(highs[i]),
+                    "index": i-1,
+                    "price": float((lows[i-2] + highs[i]) / 2)
+                })
+                
             return fvgs
         except Exception:
             return []
 
     def detect_liquidity(self, df: pd.DataFrame) -> Dict[str, List[float]]:
-        """Detect Buy-side and Sell-side Liquidity zones (Swing Highs/Lows)."""
+        """Detect Buy-side and Sell-side Liquidity zones (Swing Highs/Lows) optimized."""
         liquidity = {"BSL": [], "SSL": []}
         try:
-            # Simple swing high/low detection (Fractals)
-            for i in range(5, len(df)-5):
-                # Swing High (BSL)
-                if df["high"].iloc[i] == df["high"].iloc[i-2:i+3].max():
-                    liquidity["BSL"].append(float(df["high"].iloc[i]))
-                # Swing Low (SSL)
-                if df["low"].iloc[i] == df["low"].iloc[i-2:i+3].min():
-                    liquidity["SSL"].append(float(df["low"].iloc[i]))
+            highs = df["high"].values
+            lows = df["low"].values
+            
+            # Swing High (BSL) detection using rolling window logic
+            for i in range(2, len(highs) - 2):
+                if highs[i] == max(highs[i-2:i+3]):
+                    liquidity["BSL"].append(float(highs[i]))
+                if lows[i] == min(lows[i-2:i+3]):
+                    liquidity["SSL"].append(float(lows[i]))
+            
+            # Keep only the last 10 zones for performance if list is too long
+            liquidity["BSL"] = liquidity["BSL"][-10:]
+            liquidity["SSL"] = liquidity["SSL"][-10:]
+            
             return liquidity
         except Exception:
             return liquidity
