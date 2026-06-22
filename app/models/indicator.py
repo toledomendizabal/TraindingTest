@@ -19,13 +19,13 @@ DEFAULT_INDICATORS = [
         name="EMA_200",
         category="trend",
         parameters={"period": 200, "source": "close"},
-        weight=1.8 # Ajustado para permitir confluencia en pullbacks
+        weight=1.5 # Ajustado para permitir confluencia en pullbacks
     ),
     IndicatorConfig(
         name="EMA_50",
         category="trend",
         parameters={"period": 50, "source": "close"},
-        weight=1.3 # Ajustado para permitir confluencia en pullbacks
+        weight=1.0 # Ajustado para permitir confluencia en pullbacks
     ),
     IndicatorConfig(
         name="EMA_20",
@@ -49,13 +49,13 @@ DEFAULT_INDICATORS = [
         name="ICHIMOKU",
         category="trend",
         parameters={"tenkan": 9, "kijun": 26, "senkou_b": 52},
-        weight=1.1 # Ajustado para permitir confluencia en pullbacks
+        weight=0.9 # Ajustado para permitir confluencia en pullbacks
     ),
     IndicatorConfig(
         name="ADX_DMI",
         category="trend",
         parameters={"period": 14, "threshold": 28},
-        weight=1.0 # Ajustado para permitir confluencia en pullbacks
+        weight=0.8 # Ajustado para permitir confluencia en pullbacks
     ),
     # Momentum Indicators (Layer 3 - Triggers)
     IndicatorConfig(

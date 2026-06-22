@@ -437,9 +437,11 @@ class SignalEngine:
                     ema50 = df_5m["close"].ewm(span=50, adjust=False).mean()
                     ema200 = df_5m["close"].ewm(span=200, adjust=False).mean()
                     
-                    if direction == "BUY" and not (ema50.iloc[-1] > ema200.iloc[-1]):
+                    # Flexibilizar EMA para XAUUSD: solo precio por encima/debajo de EMA200
+                    if direction == "BUY" and not (df_5m["close"].iloc[-1] > ema200.iloc[-1]):
                         return False
-                    if direction == "SELL" and not (ema50.iloc[-1] < ema200.iloc[-1]):
+                    # Flexibilizar EMA para XAUUSD: solo precio por encima/debajo de EMA200
+                    if direction == "SELL" and not (df_5m["close"].iloc[-1] < ema200.iloc[-1]):
                         return False
                     
                     # 2. ADX > 25 (Trend strength)
@@ -447,23 +449,28 @@ class SignalEngine:
                     from app.services.indicators import indicator_service
                     ind = indicator_service.calculate_all(df_5m)
                     adx_data = ind.get("ADX_DMI") or {}
-                    if adx_data.get("adx", 0) <= 25:
+                    # Flexibilizar ADX para XAUUSD
+                    if adx_data.get("adx", 0) <= 20: # Reducir umbral de ADX
                         return False
 
                     # 3. MACD aligned
                     macd_data = ind.get("MACD") or {}
                     macd = macd_data.get("macd", 0)
                     signal_macd = macd_data.get("signal", 0)
-                    if direction == "BUY" and macd <= signal_macd:
+                    # Flexibilizar MACD para XAUUSD
+                    if direction == "BUY" and not (macd > signal_macd):
                         return False
-                    if direction == "SELL" and macd >= signal_macd:
+                    # Flexibilizar MACD para XAUUSD
+                    if direction == "SELL" and not (macd < signal_macd):
                         return False
                     
                     # 4. ATR increasing (Volatilidad creciente)
                     atr = df_5m["high"] - df_5m["low"] # simplified
                     atr_sma = atr.rolling(window=14).mean()
-                    if atr_sma.iloc[-1] <= atr_sma.iloc[-2]:
-                        return False
+                    # Eliminar filtro de ATR creciente para XAUUSD (demasiado restrictivo)
+                    # if atr_sma.iloc[-1] <= atr_sma.iloc[-2]:
+                    #     return False
+                    pass # No return, allow to pass
 
             # General structural validation (Trend Filter con al menos
             # 1 de 2 timeframes mayores confirmando, no ambos obligatorios)
