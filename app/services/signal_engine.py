@@ -93,16 +93,16 @@ class SignalEngine:
             current_spread_pips = round(spread / pip_size, 1)
 
             max_spread_pips = {
-                "XAU": 4.0,
-                "US30": 8.0,
-                "US100": 8.0,
-                "US500": 8.0,
-                "DAX": 10.0,
-                "GER40": 10.0,
-                "DJI": 8.0,
-                "NDX": 8.0,
-                "SPX": 8.0,
-            }.get(asset.upper().split("USD")[0], 3.0) # Default 3.0 for FX pairs
+                "XAU": 25.0, # Aumentado significativamente para evitar bloqueos por spread en Oro
+                "US30": 15.0,
+                "US100": 15.0,
+                "US500": 15.0,
+                "DAX": 15.0,
+                "GER40": 15.0,
+                "DJI": 15.0,
+                "NDX": 15.0,
+                "SPX": 15.0,
+            }.get(asset.upper().split("USD")[0], 5.0) # Default 5.0 for FX pairs
 
             if current_spread_pips > max_spread_pips:
                 logger.info(f"Signal for {asset} rejected: Spread ({current_spread_pips} pips) exceeds max allowed ({max_spread_pips} pips).")
@@ -124,7 +124,8 @@ class SignalEngine:
             current_hour = datetime.utcnow().hour
             # CAMBIO 14: Filtro de sesión - Ventana temporal 07:00-12:00 y 13:00-17:00 UTC
             # CAMBIO 15: Filtro de sesión - Fallo silencioso (hardcodeado)
-            if not ((7 <= current_hour < 12) or (13 <= current_hour < 17)):
+            # Flexibilizar el filtro de sesión: 06:00 - 18:00 UTC
+            if not (6 <= current_hour < 18):
                 logger.info(f"Signal for {asset} rejected: Outside institutional sessions (London/NY). Current hour: {current_hour} UTC")
                 logger.debug(f"[DEBUG] Skipping {asset}: Outside trading session.")
                 return None
@@ -436,9 +437,9 @@ class SignalEngine:
                     ema50 = df_5m["close"].ewm(span=50, adjust=False).mean()
                     ema200 = df_5m["close"].ewm(span=200, adjust=False).mean()
                     
-                    if direction == "BUY" and ema50.iloc[-1] <= ema200.iloc[-1]:
+                    if direction == "BUY" and not (ema50.iloc[-1] > ema200.iloc[-1]):
                         return False
-                    if direction == "SELL" and ema50.iloc[-1] >= ema200.iloc[-1]:
+                    if direction == "SELL" and not (ema50.iloc[-1] < ema200.iloc[-1]):
                         return False
                     
                     # 2. ADX > 25 (Trend strength)
@@ -483,10 +484,10 @@ class SignalEngine:
                     current_price = df["close"].iloc[-1]
 
                     if direction == "BUY":
-                        if current_price > ema50.iloc[-1] > ema200.iloc[-1]:
+                        if current_price > ema200.iloc[-1]:
                             confirmations += 1
                     if direction == "SELL":
-                        if current_price < ema50.iloc[-1] < ema200.iloc[-1]:
+                        if current_price < ema200.iloc[-1]:
                             confirmations += 1
 
             if timeframes_evaluated == 0:
