@@ -103,40 +103,42 @@ class MarketDataService:
             logger.debug(f"[MT5_DEBUG] Price for {asset} found in cache.")
             return cached
 
-        # 3. Twelve Data API (Backup) - TEMPORARILY DISABLED FOR MT5 DIAGNOSIS
-        logger.warning(f"[MT5_DEBUG] Twelve Data API is temporarily DISABLED for {asset}. Forcing MT5 data.")
-        return None # Force return None if MT5 data not found and API is disabled
-        # try:
-        #     await self._wait_for_rate_limit()
-        #     client = await self.get_client()
-        #     symbol = self._get_symbol(asset)
+        # 3. Twelve Data API (Backup)
+        try:
+            await self._wait_for_rate_limit()
+            client = await self.get_client()
+            symbol = self._get_symbol(asset)
 
-        #     logger.debug(f"[DEBUG] Calling Twelve Data API for price: {symbol}")
-        #     response = await client.get(
-        #         f"{self.BASE_URL}/price",
-        #         params={"symbol": symbol, "apikey": self.api_key}
-        #     )
-        #     logger.debug(f"[DEBUG] Twelve Data API price response status: {response.status_code}")
-        #     logger.debug(f"[DEBUG] Twelve Data API price response body: {response.text}")
-
-        #     if response.status_code == 200:
-        #         data = response.json()
-        #         if "price" in data:
-        #             price_data = {
-        #                 "symbol": asset,
-        #                 "price": float(data["price"]),
-        #                 "timestamp": datetime.now().isoformat(),
-        #                 "source": "API"
-        #             }
-        #             self._price_cache[asset] = price_data
-        #             self._last_update[asset] = datetime.now()
-        #             self._cleanup_cache()
-        #             return price_data
+            logger.debug(f"[DEBUG] Calling Twelve Data API for price: {symbol}")
+            response = await client.get(
+                f"{self.BASE_URL}/price",
+                params={"symbol": symbol, "apikey": self.api_key}
+            )
+            logger.debug(f"[DEBUG] Twelve Data API price response status: {response.status_code}")
             
-        #     return self._price_cache.get(asset)
-        # except Exception as e:
-        #     logger.error(f"API price failed for {asset}: {e}")
-        #     return self._price_cache.get(asset)
+            if response.status_code == 200:
+                data = response.json()
+                if "price" in data:
+                    price_data = {
+                        "symbol": asset,
+                        "price": float(data["price"]),
+                        "timestamp": datetime.now().isoformat(),
+                        "source": "API"
+                    }
+                    self._price_cache[asset] = price_data
+                    self._last_update[asset] = datetime.now()
+                    self._cleanup_cache()
+                    return price_data
+            
+            # If API fails or limit reached, return last cached price if available
+            if asset in self._price_cache:
+                logger.warning(f"[MT5_DEBUG] API failed/limit reached for {asset}. Using last cached price.")
+                return self._price_cache[asset]
+                
+            return None
+        except Exception as e:
+            logger.error(f"API price failed for {asset}: {e}")
+            return self._price_cache.get(asset)
 
     async def get_time_series(
         self,
@@ -182,51 +184,49 @@ class MarketDataService:
             except Exception as e:
                 logger.warning(f"Failed to read MT4 history for {asset}: {e}")
 
-        # 2. Backup: Twelve Data API - TEMPORARILY DISABLED FOR MT5 DIAGNOSIS
-        logger.warning(f"[MT5_DEBUG] Twelve Data API is temporarily DISABLED for {asset}. Forcing MT5 data.")
-        return None # Force return None if MT5 data not found and API is disabled
-        # try:
-        #     await self._wait_for_rate_limit()
-        #     client = await self.get_client()
-        #     symbol = self._get_symbol(asset)
+        # 2. Backup: Twelve Data API
+        try:
+            await self._wait_for_rate_limit()
+            client = await self.get_client()
+            symbol = self._get_symbol(asset)
             
-        #     # Map interval to Twelve Data format
-        #     td_map = {
-        #         "1m": "1min",
-        #         "5m": "5min",
-        #         "15m": "15min",
-        #         "1h": "1h",
-        #         "1d": "1day"
-        #     }
-        #     td_interval = td_map.get(interval, "5min")
+            # Map interval to Twelve Data format
+            td_map = {
+                "1m": "1min",
+                "5m": "5min",
+                "15m": "15min",
+                "1h": "1h",
+                "1d": "1day"
+            }
+            td_interval = td_map.get(interval, "5min")
 
-        #     logger.debug(f"[DEBUG] Calling Twelve Data API for time series: {symbol}, interval: {td_interval}")
-        #     response = await client.get(
-        #         f"{self.BASE_URL}/time_series",
-        #         params={
-        #             "symbol": symbol,
-        #             "interval": td_interval,
-        #             "outputsize": outputsize,
-        #             "apikey": self.api_key
-        #         }
-        #     )
-        #     logger.debug(f"[DEBUG] Twelve Data API time series response status: {response.status_code}")
-        #     logger.debug(f"[DEBUG] Twelve Data API time series response body: {response.text}")
-
-        #     if response.status_code == 200:
-        #         data = response.json()
-        #         if "values" in data:
-        #             df = pd.DataFrame(data["values"])
-        #             df["datetime"] = pd.to_datetime(df["datetime"])
-        #             df = df.sort_values("datetime").reset_index(drop=True)
-        #             for col in ["open", "high", "low", "close"]:
-        #                 df[col] = pd.to_numeric(df[col], errors="coerce")
-        #             df["volume"] = pd.to_numeric(df.get("volume", 0), errors="coerce")
-        #             return df
-        #     return None
-        # except Exception as e:
-        #     logger.error(f"API history failed for {asset}: {e}")
-        #     return None
+            logger.debug(f"[DEBUG] Calling Twelve Data API for time series: {symbol}, interval: {td_interval}")
+            response = await client.get(
+                f"{self.BASE_URL}/time_series",
+                params={
+                    "symbol": symbol,
+                    "interval": td_interval,
+                    "outputsize": outputsize,
+                    "apikey": self.api_key
+                }
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                if "values" in data:
+                    df = pd.DataFrame(data["values"])
+                    df["datetime"] = pd.to_datetime(df["datetime"])
+                    df = df.sort_values("datetime").reset_index(drop=True)
+                    for col in ["open", "high", "low", "close"]:
+                        df[col] = pd.to_numeric(df[col], errors="coerce")
+                    df["volume"] = pd.to_numeric(df.get("volume", 0), errors="coerce")
+                    return df
+            
+            logger.warning(f"[MT5_DEBUG] Twelve Data API failed for {asset} (Status: {response.status_code}).")
+            return None
+        except Exception as e:
+            logger.error(f"API history failed for {asset}: {e}")
+            return None
 
     async def _wait_for_rate_limit(self):
         async with self._rate_lock:
