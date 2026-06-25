@@ -1,5 +1,6 @@
 """Position monitoring service with accurate P/L and persistence."""
 import asyncio
+import pandas as pd
 from datetime import datetime
 from typing import Dict, List
 from loguru import logger
@@ -246,7 +247,7 @@ class PositionMonitor:
                 await self._close_position(signal_id, hit_status, exit_price, profit_loss)
 
         except Exception as e:
-            logger.error(f"Evaluation error for {signal_data.get('id')}: {e}")
+            logger.error(f"Evaluation error for {signal.id if hasattr(signal, 'id') else 'unknown'}: {e}")
 
     async def _close_position(self, signal_id: str, status: SignalStatus,
                                close_price: float, profit_loss: float):

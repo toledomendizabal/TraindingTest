@@ -130,6 +130,16 @@ class SignalEngine:
                 logger.debug(f"[DEBUG] Skipping {asset}: Outside trading session.")
                 return None
 
+            # Volatility Filter: Avoid "Flat" markets
+            # If ATR is too low compared to recent average, the market lacks movement
+            if df is not None and len(df) > 50:
+                recent_atr = df["high"].rolling(14).max() - df["low"].rolling(14).min()
+                avg_atr = recent_atr.mean()
+                current_atr = recent_atr.iloc[-1]
+                if current_atr < (avg_atr * 0.5):
+                    logger.info(f"Signal for {asset} rejected: Low volatility (Current ATR {round(current_atr/pip_size, 1)} < 50% of Avg {round(avg_atr/pip_size, 1)}).")
+                    return None
+
             # Validate with structural timeframe
             structural_confirmed = await self._validate_structural(asset, direction)
             if not structural_confirmed:
@@ -479,10 +489,36 @@ class SignalEngine:
             return False
 
     def _has_active_signal(self, asset: str) -> bool:
+        # 1. Check memory for currently ACTIVE signals
         for signal in self.active_signals.values():
             if signal.asset == asset and signal.status == SignalStatus.ACTIVE:
                 return True
-        return excel_manager.has_active_signal(asset)
+        
+        # 2. Check Excel for currently ACTIVE signals
+        if excel_manager.has_active_signal(asset):
+            return True
+            
+        # 3. ANTI-OVERTRADING: Cooldown Filter (15 minutes)
+        # Check if a signal for this asset was closed very recently
+        try:
+            df_signals = excel_manager.get_signals_dataframe()
+            if not df_signals.empty:
+                asset_signals = df_signals[df_signals["asset"] == asset].copy()
+                if not asset_signals.empty:
+                    # Convert closed_at to datetime
+                    asset_signals["closed_at"] = pd.to_datetime(asset_signals["closed_at"], errors="coerce")
+                    last_close = asset_signals["closed_at"].max()
+                    
+                    if pd.notna(last_close):
+                        diff_minutes = (datetime.now() - last_close).total_seconds() / 60
+                        cooldown = 15 # 15 minutes cooldown
+                        if diff_minutes < cooldown:
+                            logger.info(f"Signal for {asset} rejected: Cooldown active ({round(cooldown - diff_minutes, 1)}m remaining).")
+                            return True
+        except Exception as e:
+            logger.error(f"Error checking cooldown for {asset}: {e}")
+            
+        return False
 
     def get_active_signals(self) -> List[Signal]:
         """Get all active signals from memory."""
