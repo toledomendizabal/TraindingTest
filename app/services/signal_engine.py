@@ -15,8 +15,8 @@ from app.services.excel_manager import excel_manager
 class SignalEngine:
     """Engine for generating trading signals based on 18 indicators confluence."""
 
-    MIN_INDICATORS_FOR_SIGNAL = 6
-    ANALYSIS_TIMEFRAMES = ["30m", "1h"]
+    MIN_INDICATORS_FOR_SIGNAL = 7
+    ANALYSIS_TIMEFRAMES = ["30m", "1h", "4h"]
     SIGNAL_TIMEFRAME = "5m"
     ATR_SL_MULTIPLIER = 2.0 # CAMBIO 17: Centralized ATR SL multiplier
 
@@ -136,8 +136,14 @@ class SignalEngine:
                 recent_atr = df["high"].rolling(14).max() - df["low"].rolling(14).min()
                 avg_atr = recent_atr.mean()
                 current_atr = recent_atr.iloc[-1]
+                # Filter for low volatility (flat markets)
                 if current_atr < (avg_atr * 0.5):
                     logger.info(f"Signal for {asset} rejected: Low volatility (Current ATR {round(current_atr/pip_size, 1)} < 50% of Avg {round(avg_atr/pip_size, 1)}).")
+                    return None
+
+                # Filter for high volatility (erratic markets) - new filter
+                if current_atr > (avg_atr * 1.5): # If current ATR is 1.5 times higher than average
+                    logger.info(f"Signal for {asset} rejected: High volatility (Current ATR {round(current_atr/pip_size, 1)} > 150% of Avg {round(avg_atr/pip_size, 1)}).")
                     return None
 
             # Validate with structural timeframe
@@ -235,11 +241,12 @@ class SignalEngine:
                         if sl_distances_from_smc:
                             # Elegir la menor distancia (SL más cercano al entry) para que sea el más alto en precio
                             sl_distance_smc = min(sl_distances_from_smc)
-                            # Asegurar que el SL SMC sea al menos 1.5x ATR (o el ATR_SL_MULTIPLIER actual)
-                            if sl_distance_smc > (atr * self.ATR_SL_MULTIPLIER): # Usar ATR_SL_MULTIPLIER como mínimo para SMC SL
+                            # Priorizar SL SMC si es más ajustado pero no menor que un mínimo basado en ATR
+                            min_atr_sl = atr * (self.ATR_SL_MULTIPLIER / 2) # Por ejemplo, la mitad del SL basado en ATR
+                            if sl_distance_smc < (atr * self.ATR_SL_MULTIPLIER) and sl_distance_smc > min_atr_sl:
                                 sl_distance = sl_distance_smc
                             else:
-                                sl_distance = atr * self.ATR_SL_MULTIPLIER # Fallback a ATR si SMC SL es muy pequeño
+                                sl_distance = atr * self.ATR_SL_MULTIPLIER # Fallback a ATR si SMC SL es muy grande o muy pequeño
                         else:
                             sl_distance = atr * self.ATR_SL_MULTIPLIER # Fallback a ATR si no hay SMC SL válidos
                     else:
@@ -270,11 +277,12 @@ class SignalEngine:
                         if sl_distances_from_smc:
                             # Elegir la menor distancia (SL más cercano al entry) para que sea el más bajo en precio
                             sl_distance_smc = min(sl_distances_from_smc)
-                            # Asegurar que el SL SMC sea al menos 1.5x ATR (o el ATR_SL_MULTIPLIER actual)
-                            if sl_distance_smc > (atr * self.ATR_SL_MULTIPLIER): # Usar ATR_SL_MULTIPLIER como mínimo para SMC SL
+                            # Priorizar SL SMC si es más ajustado pero no menor que un mínimo basado en ATR
+                            min_atr_sl = atr * (self.ATR_SL_MULTIPLIER / 2) # Por ejemplo, la mitad del SL basado en ATR
+                            if sl_distance_smc < (atr * self.ATR_SL_MULTIPLIER) and sl_distance_smc > min_atr_sl:
                                 sl_distance = sl_distance_smc
                             else:
-                                sl_distance = atr * self.ATR_SL_MULTIPLIER # Fallback a ATR si SMC SL es muy pequeño
+                                sl_distance = atr * self.ATR_SL_MULTIPLIER # Fallback a ATR si SMC SL es muy grande o muy pequeño
                         else:
                             sl_distance = atr * self.ATR_SL_MULTIPLIER # Fallback a ATR si no hay SMC SL válidos
                     else:
@@ -290,7 +298,7 @@ class SignalEngine:
             is_ger40 = any(x in asset.upper() for x in ["GER40", "DAX"])
             is_gold = "XAU" in asset.upper()
             
-            min_sl_pips = 300 if (is_index_or_gold and not is_ger40) else 6
+            min_sl_pips = 30 if (is_index_or_gold and not is_ger40) else 6 # Ajustado de 300 a 30 pips para índices/oro
             current_sl_pips = sl_distance / pip_size
             
             if current_sl_pips < min_sl_pips:

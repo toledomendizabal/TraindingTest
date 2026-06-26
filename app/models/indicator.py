@@ -19,13 +19,13 @@ DEFAULT_INDICATORS = [
         name="EMA_200",
         category="trend",
         parameters={"period": 200, "source": "close"},
-        weight=1.5 # Ajustado para permitir confluencia en pullbacks
+        weight=2.0 # Aumentado para dar mayor peso a la tendencia principal
     ),
     IndicatorConfig(
         name="EMA_50",
         category="trend",
         parameters={"period": 50, "source": "close"},
-        weight=1.0 # Ajustado para permitir confluencia en pullbacks
+        weight=1.5 # Aumentado para dar mayor peso a la tendencia de mediano plazo
     ),
     IndicatorConfig(
         name="EMA_20",
@@ -49,26 +49,26 @@ DEFAULT_INDICATORS = [
         name="ICHIMOKU",
         category="trend",
         parameters={"tenkan": 9, "kijun": 26, "senkou_b": 52},
-        weight=0.9 # Ajustado para permitir confluencia en pullbacks
+        weight=1.2 # Aumentado para dar mayor peso a la tendencia robusta
     ),
     IndicatorConfig(
         name="ADX_DMI",
         category="trend",
         parameters={"period": 14, "threshold": 28},
-        weight=0.8 # Ajustado para permitir confluencia en pullbacks
+        weight=1.0 # Aumentado para dar mayor peso a la fuerza de tendencia
     ),
     # Momentum Indicators (Layer 3 - Triggers)
     IndicatorConfig(
         name="RSI",
         category="momentum",
         parameters={"period": 14, "overbought": 72, "oversold": 28}, # Stricter overbought/oversold levels
-        weight=1.3
+        weight=1.0 # Reducido para evitar penalizar tendencias fuertes
     ),
     IndicatorConfig(
         name="STOCHASTIC",
         category="momentum",
         parameters={"k_period": 14, "d_period": 3, "slowing": 3, "overbought": 85, "oversold": 15}, # Stricter overbought/oversold levels
-        weight=1.0
+        weight=0.8 # Reducido para evitar penalizar tendencias fuertes
     ),
     IndicatorConfig(
         name="MACD",
@@ -80,7 +80,7 @@ DEFAULT_INDICATORS = [
         name="CCI",
         category="momentum",
         parameters={"period": 20, "upper": 120, "lower": -120},
-        weight=1.0
+        weight=0.8 # Reducido para evitar penalizar tendencias fuertes
     ),
     IndicatorConfig(
         name="AWESOME_OSCILLATOR",
@@ -99,7 +99,7 @@ DEFAULT_INDICATORS = [
         name="WILLIAMS_R",
         category="volatility",
         parameters={"period": 14, "overbought": -20, "oversold": -80},
-        weight=1.0
+        weight=0.8 # Reducido para evitar penalizar tendencias fuertes
     ),
     IndicatorConfig(
         name="KELTNER_CHANNELS",
