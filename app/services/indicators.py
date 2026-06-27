@@ -12,6 +12,36 @@ class IndicatorService:
     def __init__(self, indicators: Optional[List[IndicatorConfig]] = None):
         self.indicators = indicators or get_default_indicators()
 
+    def update_from_config(self, config_list: List[Dict]):
+        """Update indicator settings from a configuration list (usually from Excel)."""
+        try:
+            current_indicators = {ind.name: ind for ind in self.indicators}
+            new_indicators = []
+            
+            for item in config_list:
+                name = item.get("name")
+                if name in current_indicators:
+                    ind = current_indicators[name]
+                    ind.enabled = bool(item.get("enabled", True))
+                    ind.weight = float(item.get("weight", ind.weight))
+                    new_indicators.append(ind)
+                else:
+                    # If it's a new indicator not in defaults, we might need to handle it
+                    # For now, we only update existing ones to avoid calculation errors
+                    pass
+            
+            # Ensure we keep all default indicators even if not in config (as disabled)
+            # This maintains the calculation integrity
+            for name, ind in current_indicators.items():
+                if name not in [i.name for i in new_indicators]:
+                    ind.enabled = False
+                    new_indicators.append(ind)
+                    
+            self.indicators = new_indicators
+            logger.info(f"Indicator settings updated from config: {len(new_indicators)} indicators processed")
+        except Exception as e:
+            logger.error(f"Error updating indicators from config: {e}")
+
     def calculate_all(self, df: pd.DataFrame) -> Dict[str, any]:
         """Calculate all indicators on the dataframe."""
         results = {}
@@ -72,27 +102,22 @@ class IndicatorService:
         details.append("Market Phase: All phases allowed")
 
 
-        # Layer 1: Trend Direction
-        # EMA 200
-        if "EMA_200" in indicators and indicators["EMA_200"] is not None:
+        # Layer 1: Trend Direction (STRICT FILTERS)
+        # EMA 200 & 50 Alignment is now MANDATORY for trend-following accuracy
+        if "EMA_200" in indicators and "EMA_50" in indicators:
             ema200 = indicators["EMA_200"]
-            if current_price > ema200:
-                buy_score += indicator_configs["EMA_200"].weight
-                details.append("EMA200: Price above (Bullish)")
-            elif current_price < ema200:
-                sell_score += indicator_configs["EMA_200"].weight
-                details.append("EMA200: Price below (Bearish)")
-
-        # EMA 50
-        if "EMA_50" in indicators and indicators["EMA_50"] is not None:
             ema50 = indicators["EMA_50"]
-            ema200 = indicators.get("EMA_200")
-            if ema200 and ema50 > ema200:
-                buy_score += indicator_configs["EMA_50"].weight
-                details.append("EMA50 > EMA200 (Bullish)")
-            elif ema200 and ema50 < ema200:
-                sell_score += indicator_configs["EMA_50"].weight
-                details.append("EMA50 < EMA200 (Bearish)")
+            if ema200 and ema50:
+                if current_price > ema200 and ema50 > ema200:
+                    buy_score += indicator_configs["EMA_200"].weight + indicator_configs["EMA_50"].weight
+                    details.append("Trend: Price > EMA50 > EMA200 (Strong Bullish)")
+                elif current_price < ema200 and ema50 < ema200:
+                    sell_score += indicator_configs["EMA_200"].weight + indicator_configs["EMA_50"].weight
+                    details.append("Trend: Price < EMA50 < EMA200 (Strong Bearish)")
+                else:
+                    # If trend is not clearly aligned, we reject or heavily penalize
+                    details.append("Trend: EMAs not aligned (Neutral/Consolidation)")
+                    return "NEUTRAL", 0, details
 
         # EMA Alignment
         if all(k in indicators for k in ["EMA_9", "EMA_20", "EMA_50"]):
@@ -139,9 +164,14 @@ class IndicatorService:
                     details.append(f"ADX: {adx_data['adx']:.1f} -DI>+DI (Bearish)")
 
         # Layer 3: Momentum Triggers
-        # RSI
+        # RSI (With Extreme Exhaustion Filter)
         if "RSI" in indicators and indicators["RSI"] is not None:
             rsi = indicators["RSI"]
+            # Reject if already at extreme exhaustion to avoid "buying the top"
+            if rsi > 85 or rsi < 15:
+                details.append(f"RSI: {rsi:.1f} Extreme Exhaustion (Reject)")
+                return "NEUTRAL", 0, details
+
             rsi_oversold = indicator_configs["RSI"].parameters.get("oversold", 30)
             rsi_overbought = indicator_configs["RSI"].parameters.get("overbought", 70)
             if rsi < rsi_oversold:
@@ -249,16 +279,19 @@ class IndicatorService:
                 sell_score += indicator_configs["KELTNER_CHANNELS"].weight
                 details.append("Keltner: Breakout below (Sell)")
 
-        # Volume
+        # Volume (MANDATORY CONFIRMATION)
         if "VOLUME_MA" in indicators and indicators["VOLUME_MA"] is not None:
             vol = indicators["VOLUME_MA"]
-            if vol.get("above_average", False):
-                if buy_score > sell_score:
-                    buy_score += indicator_configs["VOLUME_MA"].weight
-                    details.append("Volume: Above average (Confirms direction)")
-                elif sell_score > buy_score:
-                    sell_score += indicator_configs["VOLUME_MA"].weight
-                    details.append("Volume: Above average (Confirms direction)")
+            if not vol.get("above_average", False):
+                details.append("Volume: Below average (Insufficient interest)")
+                return "NEUTRAL", 0, details
+            
+            if buy_score > sell_score:
+                buy_score += indicator_configs["VOLUME_MA"].weight
+                details.append("Volume: Above average (Confirmed)")
+            elif sell_score > buy_score:
+                sell_score += indicator_configs["VOLUME_MA"].weight
+                details.append("Volume: Above average (Confirmed)")
 
         # MFI
         if "MFI" in indicators and indicators["MFI"] is not None:
@@ -274,11 +307,9 @@ class IndicatorService:
 
         # Determine direction based on weighted scores.
         # IMPORTANTE: la fuente de verdad del umbral mínimo es
-        # SignalEngine.MIN_INDICATORS_FOR_SIGNAL (definida en signal_engine.py),
-        # NO el archivo Excel. Esto evita que ambos sistemas queden
-        # desincronizados entre sí.
-        from app.services.signal_engine import SignalEngine
-        min_indicators = SignalEngine.MIN_INDICATORS_FOR_SIGNAL
+        # el valor cargado en runtime (que puede venir de Excel).
+        from app.services.signal_engine import signal_engine
+        min_indicators = getattr(signal_engine, "min_indicators", 7)
 
         # Calculate max possible score
         max_possible_score = sum(ind.weight for ind in self.indicators if ind.enabled)
@@ -287,7 +318,7 @@ class IndicatorService:
         min_score_for_signal = max_possible_score * (min_indicators / len(self.indicators))
 
         # Calculate how many indicators actually triggered for the winning side
-        indicators_met = len([d for d in details if ("Buy" in d or "Bullish" in d)]) if buy_score > sell_score else len([d for d in details if ("Sell" in d or "Bearish" in d)])
+        indicators_met = len([d for d in details if ("Buy" in d or "Bullish" in d or "Oversold" in d or "crossover" in d or "above" in d)]) if buy_score > sell_score else len([d for d in details if ("Sell" in d or "Bearish" in d or "Overbought" in d or "crossover" in d or "below" in d)])
 
         if buy_score > sell_score and buy_score >= min_score_for_signal:
             return "BUY", indicators_met, details

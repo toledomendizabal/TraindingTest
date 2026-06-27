@@ -22,8 +22,34 @@ class SignalEngine:
 
     def __init__(self):
         self.active_signals: Dict[str, Signal] = {}
-        self.min_indicators = self.MIN_INDICATORS_FOR_SIGNAL
+        self._load_config_from_excel()
         self._load_active_signals()
+
+    def _load_config_from_excel(self):
+        """Load trading parameters and indicator settings from Excel."""
+        try:
+            config = excel_manager.get_config()
+            params = config.get("parameters", {})
+            
+            # Load core parameters
+            self.min_indicators = int(params.get("min_indicators", self.MIN_INDICATORS_FOR_SIGNAL))
+            self.signal_timeframe = str(params.get("signal_timeframe", self.SIGNAL_TIMEFRAME))
+            
+            # Update settings for other services if needed
+            if "initial_capital" in params:
+                settings.INITIAL_CAPITAL = float(params["initial_capital"])
+            if "risk_percentage" in params:
+                settings.RISK_PERCENTAGE = float(params["risk_percentage"])
+                
+            # Indicators are handled by indicator_service.update_from_config
+            if config.get("indicators"):
+                indicator_service.update_from_config(config["indicators"])
+                
+            logger.info(f"Configuration loaded from Excel: Min Indicators={self.min_indicators}, Timeframe={self.signal_timeframe}")
+        except Exception as e:
+            logger.error(f"Error loading config from Excel: {e}")
+            self.min_indicators = self.MIN_INDICATORS_FOR_SIGNAL
+            self.signal_timeframe = self.SIGNAL_TIMEFRAME
 
     def _load_active_signals(self):
         """Load active signals from Excel on startup."""
@@ -320,9 +346,10 @@ class SignalEngine:
                 tp3 = tp1
 
             # 3. Fixed Risk Management: 0.3% of $10,000 ($30)
-            fixed_capital = 10000.0
-            fixed_risk_percent = 0.003 # 0.3%
-            risk_amount_usd = fixed_capital * fixed_risk_percent # Exactly $30
+            # Use runtime settings if available, otherwise defaults
+            fixed_capital = getattr(settings, "INITIAL_CAPITAL", 10000.0)
+            fixed_risk_percent = getattr(settings, "RISK_PERCENTAGE", 0.003)
+            risk_amount_usd = fixed_capital * fixed_risk_percent # Exactly $30 with defaults
             
             # Quality adjustment tracking (for logs/Excel, but doesn't change risk_amount anymore)
             quality_multiplier = 1.0
@@ -419,79 +446,52 @@ class SignalEngine:
         return signals
 
     async def _validate_structural(self, asset: str, direction: str) -> bool:
+        """Validate signal with higher timeframe trend and SMC alignment."""
         try:
-            # Special Strategy for XAUUSD
-            if "XAU" in asset.upper():
-                df_5m = await market_data_service.get_time_series(asset, interval="5m", outputsize=300)
-                if df_5m is not None and not df_5m.empty:
-                    # 1. EMA 50 > EMA 200
-                    ema50 = df_5m["close"].ewm(span=50, adjust=False).mean()
-                    ema200 = df_5m["close"].ewm(span=200, adjust=False).mean()
-                    
-                    # Flexibilizar EMA para XAUUSD: solo precio por encima/debajo de EMA200
-                    if direction == "BUY" and not (df_5m["close"].iloc[-1] > ema200.iloc[-1]):
-                        return False
-                    # Flexibilizar EMA para XAUUSD: solo precio por encima/debajo de EMA200
-                    if direction == "SELL" and not (df_5m["close"].iloc[-1] < ema200.iloc[-1]):
-                        return False
-                    
-                    # 2. ADX > 25 (Trend strength)
-                    # Simple ADX calculation or from indicators service
-                    from app.services.indicators import indicator_service
-                    ind = indicator_service.calculate_all(df_5m)
-                    adx_data = ind.get("ADX_DMI") or {}
-                    # Flexibilizar ADX para XAUUSD
-                    if adx_data.get("adx", 0) <= 20: # Reducir umbral de ADX
-                        return False
-
-                    # 3. MACD aligned
-                    macd_data = ind.get("MACD") or {}
-                    macd = macd_data.get("macd", 0)
-                    signal_macd = macd_data.get("signal", 0)
-                    # Flexibilizar MACD para XAUUSD
-                    if direction == "BUY" and not (macd > signal_macd):
-                        return False
-                    # Flexibilizar MACD para XAUUSD
-                    if direction == "SELL" and not (macd < signal_macd):
-                        return False
-                    
-                    # 4. ATR increasing (Volatilidad creciente)
-                    atr = df_5m["high"] - df_5m["low"] # simplified
-                    atr_sma = atr.rolling(window=14).mean()
-                    # Eliminar filtro de ATR creciente para XAUUSD (demasiado restrictivo)
-                    # if atr_sma.iloc[-1] <= atr_sma.iloc[-2]:
-                    #     return False
-                    pass # No return, allow to pass
-
-            # General structural validation (Trend Filter con al menos
-            # 1 de 2 timeframes mayores confirmando, no ambos obligatorios)
+            # General structural validation: Trend Filter with at least 1 of 3 higher timeframes confirming.
+            # This ensures we are not trading against the dominant trend while allowing for minor pullbacks.
             confirmations = 0
             timeframes_evaluated = 0
 
             for tf in self.ANALYSIS_TIMEFRAMES:
-                df = await market_data_service.get_time_series(asset, interval=tf, outputsize=100)
+                df = await market_data_service.get_time_series(asset, interval=tf, outputsize=200)
                 if df is None or df.empty:
                     continue
 
                 timeframes_evaluated += 1
-
                 ema200 = df["close"].ewm(span=200, adjust=False).mean()
-                ema50 = df["close"].ewm(span=50, adjust=False).mean()
-
-                if len(ema200) > 0 and len(ema50) > 0:
+                
+                if len(ema200) > 0:
                     current_price = df["close"].iloc[-1]
+                    if direction == "BUY" and current_price > ema200.iloc[-1]:
+                        confirmations += 1
+                    elif direction == "SELL" and current_price < ema200.iloc[-1]:
+                        confirmations += 1
 
-                    if direction == "BUY":
-                        if current_price > ema200.iloc[-1]:
-                            confirmations += 1
-                    if direction == "SELL":
-                        if current_price < ema200.iloc[-1]:
-                            confirmations += 1
+            # Require at least 1 confirmation (e.g. 30m, 1h or 4h must align)
+            if timeframes_evaluated > 0 and confirmations < 1:
+                logger.debug(f"Structural validation: Trend mismatch on higher timeframes for {asset}")
+                return False
 
-            if timeframes_evaluated == 0:
-                return False  # sin datos, no se puede confirmar: descartar
+            # SMC Alignment Check on 30m (Intermediate structure)
+            # We want to see a recent FVG in the direction of the trade as "Smart Money" confirmation.
+            df_30m = await market_data_service.get_time_series(asset, interval="30m", outputsize=100)
+            if df_30m is not None and not df_30m.empty:
+                fvgs = indicator_service.detect_fvg(df_30m)
+                if direction == "BUY":
+                    # Check for recent bullish FVG (within last 5 candles)
+                    has_bullish_fvg = any(f["type"] == "BULLISH" for f in fvgs[-5:])
+                    if not has_bullish_fvg:
+                        logger.info(f"Signal for {asset} rejected: No bullish FVG confirmation on 30m.")
+                        return False
+                elif direction == "SELL":
+                    # Check for recent bearish FVG (within last 5 candles)
+                    has_bearish_fvg = any(f["type"] == "BEARISH" for f in fvgs[-5:])
+                    if not has_bearish_fvg:
+                        logger.info(f"Signal for {asset} rejected: No bearish FVG confirmation on 30m.")
+                        return False
 
-            return confirmations >= 1
+            return True
         except Exception as e:
             logger.error(f"Error en validación estructural: {e}")
             return False
