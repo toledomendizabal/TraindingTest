@@ -453,42 +453,55 @@ class SignalEngine:
             confirmations = 0
             timeframes_evaluated = 0
 
+            h4_confirmed = False
             for tf in self.ANALYSIS_TIMEFRAMES:
-                df = await market_data_service.get_time_series(asset, interval=tf, outputsize=200)
-                if df is None or df.empty:
+                df_tf = await market_data_service.get_time_series(asset, interval=tf, outputsize=200)
+                if df_tf is None or df_tf.empty:
                     continue
 
                 timeframes_evaluated += 1
-                ema200 = df["close"].ewm(span=200, adjust=False).mean()
+                ema200 = df_tf["close"].ewm(span=200, adjust=False).mean()
                 
                 if len(ema200) > 0:
-                    current_price = df["close"].iloc[-1]
+                    current_price = df_tf["close"].iloc[-1]
+                    is_confirmed = False
                     if direction == "BUY" and current_price > ema200.iloc[-1]:
                         confirmations += 1
+                        is_confirmed = True
                     elif direction == "SELL" and current_price < ema200.iloc[-1]:
                         confirmations += 1
+                        is_confirmed = True
+                    
+                    if tf == "4h" and is_confirmed:
+                        h4_confirmed = True
 
             # Require at least 1 confirmation (e.g. 30m, 1h or 4h must align)
-            if timeframes_evaluated > 0 and confirmations < 1:
-                logger.debug(f"Structural validation: Trend mismatch on higher timeframes for {asset}")
-                return False
+            # AND MANDATORY 4h confirmation for institutional alignment
+            if timeframes_evaluated > 0:
+                if confirmations < 1:
+                    logger.debug(f"Structural validation: Trend mismatch on higher timeframes for {asset}")
+                    return False
+                if not h4_confirmed:
+                    logger.info(f"Signal for {asset} rejected: No 4h institutional trend confirmation.")
+                    return False
 
             # SMC Alignment Check on 30m (Intermediate structure)
             # We want to see a recent FVG in the direction of the trade as "Smart Money" confirmation.
             df_30m = await market_data_service.get_time_series(asset, interval="30m", outputsize=100)
             if df_30m is not None and not df_30m.empty:
                 fvgs = indicator_service.detect_fvg(df_30m)
+                # Check within last 10 candles for better flexibility in high volatility
+                recent_fvgs = fvgs[-10:] if len(fvgs) >= 10 else fvgs
+                
                 if direction == "BUY":
-                    # Check for recent bullish FVG (within last 5 candles)
-                    has_bullish_fvg = any(f["type"] == "BULLISH" for f in fvgs[-5:])
+                    has_bullish_fvg = any(f["type"] == "BULLISH" for f in recent_fvgs)
                     if not has_bullish_fvg:
-                        logger.info(f"Signal for {asset} rejected: No bullish FVG confirmation on 30m.")
+                        logger.info(f"Signal for {asset} rejected: No bullish FVG confirmation on 30m (last 10 candles).")
                         return False
                 elif direction == "SELL":
-                    # Check for recent bearish FVG (within last 5 candles)
-                    has_bearish_fvg = any(f["type"] == "BEARISH" for f in fvgs[-5:])
+                    has_bearish_fvg = any(f["type"] == "BEARISH" for f in recent_fvgs)
                     if not has_bearish_fvg:
-                        logger.info(f"Signal for {asset} rejected: No bearish FVG confirmation on 30m.")
+                        logger.info(f"Signal for {asset} rejected: No bearish FVG confirmation on 30m (last 10 candles).")
                         return False
 
             return True
