@@ -164,7 +164,15 @@ class MarketDataService:
             client = await self.get_client()
             symbol = self._get_symbol(asset)
             
-            td_map = {"1m": "1min", "5m": "5min", "15m": "15min", "1h": "1h", "1d": "1day"}
+            td_map = {
+                "1m": "1min", 
+                "5m": "5min", 
+                "15m": "15min", 
+                "30m": "30min", 
+                "1h": "1h", 
+                "4h": "4h", 
+                "1d": "1day"
+            }
             td_interval = td_map.get(interval, "5min")
 
             response = await client.get(
@@ -212,5 +220,14 @@ class MarketDataService:
             if last_update and (datetime.now() - last_update).seconds < 30:
                 return self._price_cache[asset]
         return None
+
+    def get_current_session(self) -> str:
+        """Determine current trading session based on UTC time."""
+        now = datetime.utcnow()
+        hour = now.hour
+        if 0 <= hour < 8: return "Tokyo"
+        elif 8 <= hour < 13: return "London"
+        elif 13 <= hour < 22: return "NewYork"
+        else: return "Tokyo"
 
 market_data_service = MarketDataService()
