@@ -36,11 +36,12 @@ class MarketDataService:
         self.api_key = settings.TWELVE_DATA_API_KEY
         self._client: Optional[httpx.AsyncClient] = None
         self._price_cache: Dict[str, Dict] = {}
+        self._history_cache: Dict[str, pd.DataFrame] = {} # New history cache
         self._last_update: Dict[str, datetime] = {}
         self._request_times: List[float] = []
         self._max_requests_per_minute = 7
         self._rate_lock = asyncio.Lock()
-        self._max_cache_size = 100 # Limit cache size to prevent RAM bloat
+        self._max_cache_size = 100 
 
     async def get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
@@ -57,11 +58,12 @@ class MarketDataService:
     def _get_mt4_price(self, asset: str) -> Optional[Dict]:
         """Try to get price from MT4/MT5 common files."""
         try:
+            if not settings.MT4_FILES_PATH:
+                return None
             prices_file = os.path.join(settings.MT4_FILES_PATH, "mt4_prices.csv")
             if not os.path.exists(prices_file):
                 return None
             
-            # Clean symbol for comparison
             clean_asset = asset.upper().replace("/", "").replace("CASH", "")
             
             with open(prices_file, mode='r', encoding='utf-8', errors='ignore') as f:
@@ -87,34 +89,25 @@ class MarketDataService:
 
     async def get_price(self, asset: str) -> Optional[Dict]:
         """Get current price prioritizing MT4 then API."""
-        # 1. Try MT4 (Real-time) only if path is configured
-        mt4_price = None
-        if settings.MT4_FILES_PATH:
-            mt4_price = self._get_mt4_price(asset)
-            if mt4_price:
-                self._price_cache[asset] = mt4_price
-                self._last_update[asset] = datetime.now()
-                self._cleanup_cache()
-                return mt4_price
+        mt4_price = self._get_mt4_price(asset)
+        if mt4_price:
+            self._price_cache[asset] = mt4_price
+            self._last_update[asset] = datetime.now()
+            return mt4_price
 
-        # 2. Try Cache
         cached = self.get_cached_price(asset)
         if cached:
-            logger.debug(f"[MT5_DEBUG] Price for {asset} found in cache.")
             return cached
 
-        # 3. Twelve Data API (Backup)
         try:
             await self._wait_for_rate_limit()
             client = await self.get_client()
             symbol = self._get_symbol(asset)
 
-            logger.debug(f"[DEBUG] Calling Twelve Data API for price: {symbol}")
             response = await client.get(
                 f"{self.BASE_URL}/price",
                 params={"symbol": symbol, "apikey": self.api_key}
             )
-            logger.debug(f"[DEBUG] Twelve Data API price response status: {response.status_code}")
             
             if response.status_code == 200:
                 data = response.json()
@@ -127,15 +120,9 @@ class MarketDataService:
                     }
                     self._price_cache[asset] = price_data
                     self._last_update[asset] = datetime.now()
-                    self._cleanup_cache()
                     return price_data
             
-            # If API fails or limit reached, return last cached price if available
-            if asset in self._price_cache:
-                logger.warning(f"[MT5_DEBUG] API failed/limit reached for {asset}. Using last cached price.")
-                return self._price_cache[asset]
-                
-            return None
+            return self._price_cache.get(asset)
         except Exception as e:
             logger.error(f"API price failed for {asset}: {e}")
             return self._price_cache.get(asset)
@@ -147,60 +134,39 @@ class MarketDataService:
         outputsize: int = 200
     ) -> Optional[pd.DataFrame]:
         """Get historical data prioritizing MT4 history files."""
-        # 1. Try MT4 History File only if path is configured
+        cache_key = f"{asset}_{interval}"
+        
+        # 1. Try MT4 History File
         if settings.MT4_FILES_PATH:
             try:
-                # Match the MQ5 logic: StringReplace(safe_symbol, "/", "");
                 clean_symbol = asset.upper().replace("/", "").replace("\\", "")
                 history_file = os.path.join(settings.MT4_FILES_PATH, f"history_{clean_symbol}.csv")
                 
-                logger.debug(f"[MT5_DEBUG] Checking MT4 history file: {history_file}")
-                if not os.path.exists(history_file):
-                    logger.debug(f"[MT5_DEBUG] MT4 history file NOT FOUND: {history_file}")
-                    # If file not found, try without .csv extension (some EAs might not add it)
-                    history_file_no_ext = os.path.join(settings.MT4_FILES_PATH, f"history_{clean_symbol}")
-                    if os.path.exists(history_file_no_ext):
-                        logger.debug(f"[MT5_DEBUG] MT4 history file found without .csv extension: {history_file_no_ext}")
-                        history_file = history_file_no_ext
-                    else:
-                        logger.debug(f"[MT5_DEBUG] MT4 history file NOT FOUND even without .csv extension: {history_file_no_ext}")
-                        return None # Explicitly return None if not found
-
-                logger.debug(f"[MT5_DEBUG] MT4 history file found: {history_file}")
-                
-                # Proceed with reading the file
                 if os.path.exists(history_file):
                     df = pd.read_csv(history_file)
                     df["datetime"] = pd.to_datetime(df["datetime"])
                     df = df.sort_values("datetime").reset_index(drop=True)
-                    
-                    # Convert numeric columns
                     for col in ["open", "high", "low", "close", "volume"]:
                         if col in df.columns:
                             df[col] = pd.to_numeric(df[col], errors="coerce")
-                    
-                    logger.debug(f"Loaded {len(df)} bars from MT4 history for {asset}")
                     return df
             except Exception as e:
                 logger.warning(f"Failed to read MT4 history for {asset}: {e}")
 
-        # 2. Backup: Twelve Data API
+        # 2. Backup: Twelve Data API with simple cache
+        if cache_key in self._history_cache:
+            last_upd = self._last_update.get(cache_key)
+            if last_upd and (datetime.now() - last_upd).seconds < 300: # 5 min cache
+                return self._history_cache[cache_key]
+
         try:
             await self._wait_for_rate_limit()
             client = await self.get_client()
             symbol = self._get_symbol(asset)
             
-            # Map interval to Twelve Data format
-            td_map = {
-                "1m": "1min",
-                "5m": "5min",
-                "15m": "15min",
-                "1h": "1h",
-                "1d": "1day"
-            }
+            td_map = {"1m": "1min", "5m": "5min", "15m": "15min", "1h": "1h", "1d": "1day"}
             td_interval = td_map.get(interval, "5min")
 
-            logger.debug(f"[DEBUG] Calling Twelve Data API for time series: {symbol}, interval: {td_interval}")
             response = await client.get(
                 f"{self.BASE_URL}/time_series",
                 params={
@@ -220,13 +186,15 @@ class MarketDataService:
                     for col in ["open", "high", "low", "close"]:
                         df[col] = pd.to_numeric(df[col], errors="coerce")
                     df["volume"] = pd.to_numeric(df.get("volume", 0), errors="coerce")
+                    
+                    self._history_cache[cache_key] = df
+                    self._last_update[cache_key] = datetime.now()
                     return df
             
-            logger.warning(f"[MT5_DEBUG] Twelve Data API failed for {asset} (Status: {response.status_code}).")
-            return None
+            return self._history_cache.get(cache_key)
         except Exception as e:
             logger.error(f"API history failed for {asset}: {e}")
-            return None
+            return self._history_cache.get(cache_key)
 
     async def _wait_for_rate_limit(self):
         async with self._rate_lock:
@@ -238,34 +206,11 @@ class MarketDataService:
                     await asyncio.sleep(wait_time)
             self._request_times.append(time.time())
 
-    def get_current_session(self) -> str:
-        """Determine current trading session based on UTC time."""
-        now = datetime.utcnow()
-        hour = now.hour
-        if 0 <= hour < 8: return "Tokyo"
-        elif 8 <= hour < 13: return "London"
-        elif 13 <= hour < 22: return "NewYork"
-        else: return "Tokyo"
-
     def get_cached_price(self, asset: str) -> Optional[Dict]:
         if asset in self._price_cache:
             last_update = self._last_update.get(asset)
             if last_update and (datetime.now() - last_update).seconds < 30:
                 return self._price_cache[asset]
-            else:
-                # Clean expired cache
-                del self._price_cache[asset]
-                del self._last_update[asset]
         return None
-
-    def _cleanup_cache(self):
-        """Keep cache size under control."""
-        if len(self._price_cache) > self._max_cache_size:
-            # Remove oldest 20%
-            sorted_assets = sorted(self._last_update.items(), key=lambda x: x[1])
-            for asset, _ in sorted_assets[:int(self._max_cache_size * 0.2)]:
-                del self._price_cache[asset]
-                del self._last_update[asset]
-
 
 market_data_service = MarketDataService()

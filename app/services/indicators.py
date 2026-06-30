@@ -115,9 +115,8 @@ class IndicatorService:
                     sell_score += indicator_configs["EMA_200"].weight + indicator_configs["EMA_50"].weight
                     details.append("Trend: Price < EMA50 < EMA200 (Strong Bearish)")
                 else:
-                    # If trend is not clearly aligned, we reject or heavily penalize
-                    details.append("Trend: EMAs not aligned (Neutral/Consolidation)")
-                    return "NEUTRAL", 0, details
+                    # Si no están alineadas, simplemente no sumamos puntos de tendencia, pero permitimos continuar
+                    details.append("Trend: EMAs not aligned (Neutral)")
 
         # EMA Alignment
         if all(k in indicators for k in ["EMA_9", "EMA_20", "EMA_50"]):
@@ -279,19 +278,18 @@ class IndicatorService:
                 sell_score += indicator_configs["KELTNER_CHANNELS"].weight
                 details.append("Keltner: Breakout below (Sell)")
 
-        # Volume (MANDATORY CONFIRMATION)
+        # Volume Confirmation
         if "VOLUME_MA" in indicators and indicators["VOLUME_MA"] is not None:
             vol = indicators["VOLUME_MA"]
-            if not vol.get("above_average", False):
-                details.append("Volume: Below average (Insufficient interest)")
-                return "NEUTRAL", 0, details
-            
-            if buy_score > sell_score:
-                buy_score += indicator_configs["VOLUME_MA"].weight
-                details.append("Volume: Above average (Confirmed)")
-            elif sell_score > buy_score:
-                sell_score += indicator_configs["VOLUME_MA"].weight
-                details.append("Volume: Above average (Confirmed)")
+            if vol.get("above_average", False):
+                if buy_score > sell_score:
+                    buy_score += indicator_configs["VOLUME_MA"].weight
+                    details.append("Volume: Above average (Confirmed)")
+                elif sell_score > buy_score:
+                    sell_score += indicator_configs["VOLUME_MA"].weight
+                    details.append("Volume: Above average (Confirmed)")
+            else:
+                details.append("Volume: Below average")
 
         # MFI
         if "MFI" in indicators and indicators["MFI"] is not None:
@@ -315,14 +313,15 @@ class IndicatorService:
         max_possible_score = sum(ind.weight for ind in self.indicators if ind.enabled)
 
         # Calculate threshold based on min_indicators ratio
-        min_score_for_signal = max_possible_score * (min_indicators / len(self.indicators))
+        # Usamos una base de 12 indicadores relevantes para el cálculo del ratio de puntuación
+        min_score_for_signal = max_possible_score * (min_indicators / 12)
 
         # Calculate how many indicators actually triggered for the winning side
         indicators_met = len([d for d in details if ("Buy" in d or "Bullish" in d or "Oversold" in d or "crossover" in d or "above" in d)]) if buy_score > sell_score else len([d for d in details if ("Sell" in d or "Bearish" in d or "Overbought" in d or "crossover" in d or "below" in d)])
 
-        if buy_score > sell_score and buy_score >= min_score_for_signal:
+        if buy_score > sell_score and indicators_met >= min_indicators:
             return "BUY", indicators_met, details
-        elif sell_score > buy_score and sell_score >= min_score_for_signal:
+        elif sell_score > buy_score and indicators_met >= min_indicators:
             return "SELL", indicators_met, details
         else:
             return "NEUTRAL", indicators_met, details

@@ -3,6 +3,7 @@ import os
 import sys
 import asyncio
 import importlib
+import pandas as pd
 from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -192,8 +193,6 @@ async def check_api_connectivity():
 
 def main():
     """Run all diagnostics."""
-    import pandas as pd
-
     print("=" * 60)
     print("TradingSignal Pro - Diagnóstico del Sistema")
     print(f"Fecha: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")

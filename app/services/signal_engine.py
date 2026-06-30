@@ -119,16 +119,16 @@ class SignalEngine:
             current_spread_pips = round(spread / pip_size, 1)
 
             max_spread_pips = {
-                "XAU": 25.0, # Aumentado significativamente para evitar bloqueos por spread en Oro
-                "US30": 15.0,
-                "US100": 15.0,
-                "US500": 15.0,
-                "DAX": 15.0,
-                "GER40": 15.0,
-                "DJI": 15.0,
-                "NDX": 15.0,
-                "SPX": 15.0,
-            }.get(asset.upper().split("USD")[0], 5.0) # Default 5.0 for FX pairs
+                "XAU": 50.0, # Aumentado para evitar bloqueos por spread en Oro
+                "US30": 30.0,
+                "US100": 30.0,
+                "US500": 30.0,
+                "DAX": 30.0,
+                "GER40": 30.0,
+                "DJI": 30.0,
+                "NDX": 30.0,
+                "SPX": 30.0,
+            }.get(asset.upper().split("USD")[0], 10.0) # Default 10.0 for FX pairs
 
             if current_spread_pips > max_spread_pips:
                 logger.info(f"Signal for {asset} rejected: Spread ({current_spread_pips} pips) exceeds max allowed ({max_spread_pips} pips).")
@@ -145,15 +145,11 @@ class SignalEngine:
                 logger.debug(f"[DEBUG] Skipping {asset}: Indicator evaluation NEUTRAL or insufficient indicators met ({indicators_met}/{self.MIN_INDICATORS_FOR_SIGNAL}).")
                 return None
 
-            # Session Filter: Only trade during London or NY sessions (approx 07:00 - 17:00 UTC)
-            # This reduces false breakouts during Asian session consolidation
+            # Session Filter: Flexibilizado para pruebas (0-24h)
+            # En producción se recomienda 07:00 - 17:00 UTC
             current_hour = datetime.utcnow().hour
-            # CAMBIO 14: Filtro de sesión - Ventana temporal 07:00-12:00 y 13:00-17:00 UTC
-            # CAMBIO 15: Filtro de sesión - Fallo silencioso (hardcodeado)
-            # Flexibilizar el filtro de sesión: 06:00 - 18:00 UTC
-            if not (6 <= current_hour < 18):
-                logger.info(f"Signal for {asset} rejected: Outside institutional sessions (London/NY). Current hour: {current_hour} UTC")
-                logger.debug(f"[DEBUG] Skipping {asset}: Outside trading session.")
+            if not (0 <= current_hour <= 23):
+                logger.info(f"Signal for {asset} rejected: Outside session.")
                 return None
 
             # Volatility Filter: Avoid "Flat" markets
@@ -167,9 +163,9 @@ class SignalEngine:
                     logger.info(f"Signal for {asset} rejected: Low volatility (Current ATR {round(current_atr/pip_size, 1)} < 50% of Avg {round(avg_atr/pip_size, 1)}).")
                     return None
 
-                # Filter for high volatility (erratic markets) - new filter
-                if current_atr > (avg_atr * 1.5): # If current ATR is 1.5 times higher than average
-                    logger.info(f"Signal for {asset} rejected: High volatility (Current ATR {round(current_atr/pip_size, 1)} > 150% of Avg {round(avg_atr/pip_size, 1)}).")
+                # Filter for high volatility (erratic markets) - Flexibilizado a 2.5x
+                if current_atr > (avg_atr * 2.5): 
+                    logger.info(f"Signal for {asset} rejected: High volatility (Current ATR {round(current_atr/pip_size, 1)} > 250% of Avg {round(avg_atr/pip_size, 1)}).")
                     return None
 
             # Validate with structural timeframe
@@ -475,14 +471,11 @@ class SignalEngine:
                     if tf == "4h" and is_confirmed:
                         h4_confirmed = True
 
-            # Require at least 1 confirmation (e.g. 30m, 1h or 4h must align)
-            # AND MANDATORY 4h confirmation for institutional alignment
+            # Require at least 2 confirmations (e.g. 30m, 1h or 4h must align)
+            # El filtro de 4h ya no es obligatorio si los otros dos confirman, pero suma puntos.
             if timeframes_evaluated > 0:
-                if confirmations < 1:
-                    logger.debug(f"Structural validation: Trend mismatch on higher timeframes for {asset}")
-                    return False
-                if not h4_confirmed:
-                    logger.info(f"Signal for {asset} rejected: No 4h institutional trend confirmation.")
+                if confirmations < 2:
+                    logger.info(f"Structural validation: Insufficient trend confirmation ({confirmations}/2) for {asset}")
                     return False
 
             # SMC Alignment Check on 30m (Intermediate structure)
