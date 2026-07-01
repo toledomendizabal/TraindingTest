@@ -79,55 +79,56 @@ class PositionMonitor:
                     continue
 
                 logger.bind(module="monitoring").info(f"Analyzing {len(df)} candles for {signal.asset}...")
-                
-                # Check each candle for TP/SL hits
+
+                # CAMBIO (fix win-rate): se reutiliza la misma cascada de
+                # cierre parcial (SL -> TP1 parcial+BE -> TP2 parcial+SL@TP1
+                # -> TP3 final) que usa el monitoreo en vivo, en vez de la
+                # lógica anterior "todo o nada" que cerraba el 100% en el
+                # primer nivel tocado. Como solo tenemos OHLC (no el camino
+                # intra-vela), se evalúa de forma conservadora: primero SL,
+                # luego TP3/TP2/TP1 usando el extremo favorable de la vela,
+                # permitiendo varios eventos dentro de la misma vela si el
+                # rango high-low los cubre.
                 for _, row in df.iterrows():
                     high = float(row["high"])
                     low = float(row["low"])
-                    
-                    hit_status = None
-                    exit_price = None
-                    
-                    if signal.direction.value == "BUY":
-                        if low <= signal.stop_loss:
-                            hit_status = SignalStatus.CLOSED_SL
-                            exit_price = signal.stop_loss
-                        elif high >= signal.take_profit_3:
-                            hit_status = SignalStatus.CLOSED_TP3
-                            exit_price = signal.take_profit_3
-                        elif high >= signal.take_profit_2:
-                            hit_status = SignalStatus.CLOSED_TP2
-                            exit_price = signal.take_profit_2
-                        elif high >= signal.take_profit_1:
-                            hit_status = SignalStatus.CLOSED_TP1
-                            exit_price = signal.take_profit_1
-                    else: # SELL
-                        if high >= signal.stop_loss:
-                            hit_status = SignalStatus.CLOSED_SL
-                            exit_price = signal.stop_loss
-                        elif low <= signal.take_profit_3:
-                            hit_status = SignalStatus.CLOSED_TP3
-                            exit_price = signal.take_profit_3
-                        elif low <= signal.take_profit_2:
-                            hit_status = SignalStatus.CLOSED_TP2
-                            exit_price = signal.take_profit_2
-                        elif low <= signal.take_profit_1:
-                            hit_status = SignalStatus.CLOSED_TP1
-                            exit_price = signal.take_profit_1
-                            
-                    if hit_status:
-                        logger.bind(module="monitoring").info(
-                            f"Retroactive hit detected for {signal.asset} ({signal.id}): {hit_status.value} at {row['datetime']}"
-                        )
-                        # Calculate P/L
-                        pip_info = Asset.get_pip_info(signal.asset)
-                        price_diff = (exit_price - signal.entry_price) if signal.direction.value == "BUY" else (signal.entry_price - exit_price)
-                        
-                        # Use simple conversion for retroactive (or fetch current)
-                        profit_loss = price_diff * signal.lot_size * pip_info["contract_size"]
-                        
-                        await self._close_position(signal.id, hit_status, exit_price, profit_loss)
-                        break # Signal closed, move to next
+
+                    # Una vela puede, en teoría, atravesar varios niveles
+                    # (p. ej. un gap grande). Se procesa en cascada hasta que
+                    # ningún nivel adicional se vea afectado por este rango.
+                    for _ in range(4):  # máximo: SL/BE, TP1, TP2, TP3
+                        if signal.id not in signal_engine.active_signals:
+                            break  # ya se cerró del todo
+                        cur = signal_engine.active_signals[signal.id]
+                        if cur.status != SignalStatus.ACTIVE:
+                            break
+
+                        # Evaluamos primero el peor caso (SL) y luego el mejor (TP)
+                        if cur.direction.value == "BUY":
+                            sl_touched = low <= cur.stop_loss
+                            tp_price = high
+                        else:
+                            sl_touched = high >= cur.stop_loss
+                            tp_price = low
+
+                        if sl_touched:
+                            await self._evaluate_position(cur, cur.stop_loss)
+                        else:
+                            await self._evaluate_position(cur, tp_price)
+
+                        # Si no hubo cambios de estado/lote en esta pasada, no
+                        # tiene sentido seguir iterando esta misma vela.
+                        if signal.id not in signal_engine.active_signals:
+                            break
+                        updated = signal_engine.active_signals[signal.id]
+                        if updated.status != SignalStatus.ACTIVE:
+                            break
+                        if updated.remaining_lot_size == cur.remaining_lot_size:
+                            break
+
+                    if signal.id not in signal_engine.active_signals or \
+                            signal_engine.active_signals[signal.id].status != SignalStatus.ACTIVE:
+                        break  # señal totalmente cerrada, pasar a la siguiente
                         
             except Exception as e:
                 logger.error(f"Error in retroactive verification for {signal.id}: {e}")
@@ -158,16 +159,34 @@ class PositionMonitor:
                 logger.bind(module="monitoring").warning(f"No price data available for {asset} during monitoring.")
 
     async def _evaluate_position(self, signal, current_price: float):
+        """
+        Evalúa una posición activa contra SL/TP.
+
+        CAMBIO (fix win-rate): ahora TP1/TP2/TP3 son niveles reales y
+        distintos (1R/2R/3R). Se implementa cierre parcial escalonado:
+          - TP1 alcanzado -> se cierra el % configurado (TP1_CLOSE_PCT) y el
+            SL se mueve a breakeven (entry_price) para el resto de la
+            posición. La operación NO se cierra del todo.
+          - TP2 alcanzado -> se cierra otro % (TP2_CLOSE_PCT) y el SL sube a
+            TP1, asegurando una ganancia mínima de 1R en lo que quede abierto.
+          - TP3 alcanzado -> se cierra el resto de la posición. Estado final:
+            CLOSED_TP3.
+          - SL alcanzado ANTES de tocar TP1 -> pérdida total, CLOSED_SL.
+          - SL (ya movido a breakeven o a TP1) alcanzado DESPUÉS de un cierre
+            parcial -> el resultado neto ya no es una pérdida total: se marca
+            como CLOSED_BE (o CLOSED_TP3 si el remanente ya estaba en TP1+).
+        Esto es lo que efectivamente sube el win rate real: una operación que
+        antes era 100% pérdida si revertía después de ir a favor, ahora deja
+        una ganancia parcial materializada.
+        """
         try:
             signal_id = signal.id
             asset = signal.asset
             direction = signal.direction.value
             entry_price = signal.entry_price
-            stop_loss = signal.stop_loss
             tp1 = signal.take_profit_1
             tp2 = signal.take_profit_2
             tp3 = signal.take_profit_3
-            lot_size = signal.lot_size
 
             pip_info = Asset.get_pip_info(asset)
             contract_size = pip_info["contract_size"]
@@ -177,77 +196,153 @@ class PositionMonitor:
             # Track Drawdown
             if direction == "BUY":
                 floating_pips = (current_price - entry_price) / pip_size
-                if floating_pips < 0:
-                    drawdown = abs(floating_pips)
-                    if drawdown > signal.max_drawdown:
-                        signal.max_drawdown = round(drawdown, 1)
             else:
                 floating_pips = (entry_price - current_price) / pip_size
-                if floating_pips < 0:
-                    drawdown = abs(floating_pips)
-                    if drawdown > signal.max_drawdown:
-                        signal.max_drawdown = round(drawdown, 1)
+            if floating_pips < 0:
+                drawdown = abs(floating_pips)
+                if drawdown > signal.max_drawdown:
+                    signal.max_drawdown = round(drawdown, 1)
 
-            # Check SL/TP
-            hit_status = None
-            exit_price = None
+            quote_to_usd_rate = await self._get_quote_to_usd_rate(quote_currency)
 
-            if direction == "BUY":
-                if current_price <= stop_loss:
-                    hit_status = SignalStatus.CLOSED_SL
-                    exit_price = stop_loss
-                elif current_price >= tp3:
-                    hit_status = SignalStatus.CLOSED_TP3
-                    exit_price = tp3
-                elif current_price >= tp2:
-                    hit_status = SignalStatus.CLOSED_TP2
-                    exit_price = tp2
-                elif current_price >= tp1:
-                    hit_status = SignalStatus.CLOSED_TP1
-                    exit_price = tp1
-            else: # SELL
-                if current_price >= stop_loss:
-                    hit_status = SignalStatus.CLOSED_SL
-                    exit_price = stop_loss
-                elif current_price <= tp3:
-                    hit_status = SignalStatus.CLOSED_TP3
-                    exit_price = tp3
-                elif current_price <= tp2:
-                    hit_status = SignalStatus.CLOSED_TP2
-                    exit_price = tp2
-                elif current_price <= tp1:
-                    hit_status = SignalStatus.CLOSED_TP1
-                    exit_price = tp1
-
-            if hit_status:
-                # Calculate P/L accurately
-                # P/L = (Exit - Entry) * LotSize * ContractSize * ConversionRate
+            def pnl_for(exit_price: float, lot: float) -> float:
                 price_diff = (exit_price - entry_price) if direction == "BUY" else (entry_price - exit_price)
-                
-                quote_to_usd_rate = 1.0
-                if quote_currency == "EUR":
-                    eurusd = await market_data_service.get_price("EURUSD")
-                    if eurusd: quote_to_usd_rate = eurusd["price"]
-                elif quote_currency == "JPY":
-                    usdjpy = await market_data_service.get_price("USDJPY")
-                    if usdjpy: quote_to_usd_rate = 1.0 / usdjpy["price"]
+                return price_diff * lot * contract_size * quote_to_usd_rate
 
-                profit_loss = price_diff * lot_size * contract_size * quote_to_usd_rate
-                
-                # Final metrics
-                signal.exit_hour = datetime.now().strftime("%H:%M")
-                if signal.created_at:
-                    duration = (datetime.now() - signal.created_at).total_seconds() / 60
-                    signal.duration_minutes = round(duration, 1)
-                
-                risk_pips = signal.sl_pips if signal.sl_pips > 0 else 1
-                gain_pips = abs(exit_price - entry_price) / pip_size
-                signal.risk_reward_ratio = round(gain_pips / risk_pips, 2)
-                
-                await self._close_position(signal_id, hit_status, exit_price, profit_loss)
+            # Init lot tracking on first evaluation if missing (legacy signals)
+            if not signal.remaining_lot_size or signal.remaining_lot_size <= 0:
+                signal.remaining_lot_size = signal.lot_size
+            if not signal.initial_lot_size or signal.initial_lot_size <= 0:
+                signal.initial_lot_size = signal.lot_size
+
+            current_sl = signal.stop_loss
+
+            sl_hit = (direction == "BUY" and current_price <= current_sl) or \
+                     (direction == "SELL" and current_price >= current_sl)
+            tp3_hit = (direction == "BUY" and current_price >= tp3) or \
+                      (direction == "SELL" and current_price <= tp3)
+            tp2_hit = (direction == "BUY" and current_price >= tp2) or \
+                      (direction == "SELL" and current_price <= tp2)
+            tp1_hit = (direction == "BUY" and current_price >= tp1) or \
+                      (direction == "SELL" and current_price <= tp1)
+
+            # --- 1. Stop Loss (inicial o ya movido a breakeven/TP1) ---
+            if sl_hit:
+                closing_lot = signal.remaining_lot_size
+                leg_pnl = pnl_for(current_sl, closing_lot)
+                total_pnl = round(signal.realized_partial_pnl + leg_pnl, 2)
+
+                # Si ya hubo cierres parciales con ganancia, esto NO es una
+                # pérdida total: es un breakeven o un cierre protegido.
+                final_status = SignalStatus.CLOSED_SL
+                if signal.tp1_hit:
+                    final_status = SignalStatus.CLOSED_BE
+
+                self._finalize_metrics(signal, current_sl)
+                signal.remaining_lot_size = 0.0
+                await self._close_position(signal_id, final_status, current_sl, total_pnl)
+                return
+
+            # --- 2. TP3: cierre final del remanente ---
+            if tp3_hit:
+                closing_lot = signal.remaining_lot_size
+                leg_pnl = pnl_for(tp3, closing_lot)
+                total_pnl = round(signal.realized_partial_pnl + leg_pnl, 2)
+
+                self._finalize_metrics(signal, tp3)
+                signal.remaining_lot_size = 0.0
+                await self._close_position(signal_id, SignalStatus.CLOSED_TP3, tp3, total_pnl)
+                return
+
+            # --- 3. TP2: cierre parcial + SL sube a TP1 ---
+            if tp2_hit and not signal.tp2_hit:
+                close_pct = min(settings.TP2_CLOSE_PCT / 100.0, 1.0)
+                closing_lot = round(signal.initial_lot_size * close_pct, 2)
+                closing_lot = min(closing_lot, signal.remaining_lot_size)
+
+                leg_pnl = pnl_for(tp2, closing_lot)
+                signal.realized_partial_pnl = round(signal.realized_partial_pnl + leg_pnl, 2)
+                signal.remaining_lot_size = round(signal.remaining_lot_size - closing_lot, 2)
+                signal.lot_size = signal.remaining_lot_size
+                signal.tp2_hit = True
+                signal.stop_loss = tp1  # Asegura al menos 1R en el remanente
+                signal.breakeven_active = True
+
+                await excel_manager.register_partial_close(
+                    signal_id, "TP2", tp2, closing_lot, leg_pnl, signal.remaining_lot_size
+                )
+                try:
+                    from app.services.telegram_service import telegram_service
+                    await telegram_service.send_partial_close_notification(
+                        signal, "TP2", tp2, closing_lot, leg_pnl, signal.remaining_lot_size
+                    )
+                except Exception as e:
+                    logger.error(f"Telegram partial-close notify error: {e}")
+
+                logger.bind(module="monitoring").info(
+                    f"PARTIAL CLOSE {signal_id} @ TP2 ({tp2}): closed {closing_lot} lots, "
+                    f"P/L ${leg_pnl:.2f}, remaining {signal.remaining_lot_size} lots, SL->TP1"
+                )
+                return
+
+            # --- 4. TP1: cierre parcial + SL a breakeven ---
+            if tp1_hit and not signal.tp1_hit:
+                close_pct = min(settings.TP1_CLOSE_PCT / 100.0, 1.0)
+                closing_lot = round(signal.initial_lot_size * close_pct, 2)
+                closing_lot = min(closing_lot, signal.remaining_lot_size)
+
+                leg_pnl = pnl_for(tp1, closing_lot)
+                signal.realized_partial_pnl = round(signal.realized_partial_pnl + leg_pnl, 2)
+                signal.remaining_lot_size = round(signal.remaining_lot_size - closing_lot, 2)
+                signal.lot_size = signal.remaining_lot_size
+                signal.tp1_hit = True
+                signal.stop_loss = entry_price  # Breakeven
+                signal.breakeven_active = True
+
+                await excel_manager.register_partial_close(
+                    signal_id, "TP1", tp1, closing_lot, leg_pnl, signal.remaining_lot_size
+                )
+                try:
+                    from app.services.telegram_service import telegram_service
+                    await telegram_service.send_partial_close_notification(
+                        signal, "TP1", tp1, closing_lot, leg_pnl, signal.remaining_lot_size
+                    )
+                except Exception as e:
+                    logger.error(f"Telegram partial-close notify error: {e}")
+
+                logger.bind(module="monitoring").info(
+                    f"PARTIAL CLOSE {signal_id} @ TP1 ({tp1}): closed {closing_lot} lots, "
+                    f"P/L ${leg_pnl:.2f}, remaining {signal.remaining_lot_size} lots, SL->breakeven"
+                )
+                return
 
         except Exception as e:
             logger.error(f"Evaluation error for {signal.id if hasattr(signal, 'id') else 'unknown'}: {e}")
+
+    async def _get_quote_to_usd_rate(self, quote_currency: str) -> float:
+        """Obtiene la tasa de conversión de la moneda cotizada a USD."""
+        if quote_currency == "EUR":
+            eurusd = await market_data_service.get_price("EURUSD")
+            if eurusd:
+                return eurusd["price"]
+        elif quote_currency == "JPY":
+            usdjpy = await market_data_service.get_price("USDJPY")
+            if usdjpy:
+                return 1.0 / usdjpy["price"]
+        return 1.0
+
+    def _finalize_metrics(self, signal, exit_price: float):
+        """Calcula duración, hora de salida y R:R final antes del cierre."""
+        signal.exit_hour = datetime.now().strftime("%H:%M")
+        if signal.created_at:
+            duration = (datetime.now() - signal.created_at).total_seconds() / 60
+            signal.duration_minutes = round(duration, 1)
+
+        pip_info = Asset.get_pip_info(signal.asset)
+        pip_size = pip_info["pip_size"]
+        risk_pips = signal.sl_pips if signal.sl_pips > 0 else 1
+        gain_pips = abs(exit_price - signal.entry_price) / pip_size
+        signal.risk_reward_ratio = round(gain_pips / risk_pips, 2)
 
     async def _close_position(self, signal_id: str, status: SignalStatus,
                                close_price: float, profit_loss: float):

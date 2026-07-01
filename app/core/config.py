@@ -38,6 +38,40 @@ class Settings(BaseSettings):
     MT4_FILES_PATH: str = os.getenv("MT4_FILES_PATH", "")
     MT4_SYNC_ENABLED: bool = True
 
+    # --- Risk / Win-Rate Tuning (CAMBIO: revisión de causas del 25% win rate) ---
+    # Session Filter: restrict trading to higher-liquidity hours (UTC).
+    # Operar 24h (incluyendo sesión asiática de baja liquidez) degrada el ratio señal/ruido.
+    SESSION_FILTER_ENABLED: bool = True
+    SESSION_START_HOUR_UTC: int = 7   # Apertura de Londres
+    SESSION_END_HOUR_UTC: int = 17    # Cierre de solapamiento Londres/NY
+
+    # Minimum Stop Loss distances (in pips) per asset class.
+    # Subidos respecto al valor anterior (6 pips FX) para que el spread no
+    # represente una fracción excesiva del SL.
+    MIN_SL_PIPS_FX: float = 10.0
+    MIN_SL_PIPS_INDEX_GOLD: float = 30.0
+
+    # Maximum allowed spread (in pips) per asset class.
+    # Bajado respecto al valor anterior (10 pips FX) para evitar que el spread
+    # distorsione el R:R real cerca de SL mínimos ajustados.
+    MAX_SPREAD_PIPS_FX: float = 3.0
+    MAX_SPREAD_PIPS_INDEX_GOLD: float = 30.0
+    MAX_SPREAD_PIPS_XAU: float = 50.0
+
+    # Take Profit structure expressed as multiples of the SL distance (R).
+    # TP1 se usa para cierre parcial + mover SL a breakeven (sube el win rate
+    # real, porque una operación que llega a 1R y luego revierte deja de ser
+    # una pérdida total y pasa a ser una ganancia parcial o un breakeven).
+    TP1_R_MULTIPLE: float = 1.0
+    TP2_R_MULTIPLE: float = 2.0
+    TP3_R_MULTIPLE: float = 3.0
+
+    # Percentage of the position closed at each take-profit level.
+    # Debe sumar 100.
+    TP1_CLOSE_PCT: float = 50.0
+    TP2_CLOSE_PCT: float = 25.0
+    TP3_CLOSE_PCT: float = 25.0
+
     # Active Assets
     ACTIVE_ASSETS: List[str] = [
         "EURUSD", "GBPUSD", "USDJPY", "USDCHF",

@@ -89,9 +89,22 @@ class IndicatorService:
         """
         Evaluate all indicators and determine BUY/SELL/NEUTRAL signal.
         Returns: (direction, indicators_met, details)
+
+        CAMBIO (fix win-rate): el conteo de `indicators_met` ya NO se basa en
+        buscar substrings ("Buy", "Bullish", "above"...) dentro de los textos
+        de `details`. Ese método era frágil: por ejemplo la palabra
+        "crossover" aparece tanto en "MACD: Bullish crossover" como en
+        "MACD: Bearish crossover", por lo que un detalle del lado perdedor
+        podía contarse erróneamente como confirmación del lado ganador.
+        Ahora cada vez que se suma puntaje a buy_score o sell_score se
+        incrementa un contador explícito (buy_hits / sell_hits) en el mismo
+        punto del código, así que el conteo siempre refleja exactamente lo
+        que se sumó.
         """
         buy_score = 0.0
         sell_score = 0.0
+        buy_hits = 0
+        sell_hits = 0
         details = []
         current_price = df["close"].iloc[-1]
 
@@ -101,7 +114,6 @@ class IndicatorService:
         # Market Phase Filter disabled by user request
         details.append("Market Phase: All phases allowed")
 
-
         # Layer 1: Trend Direction (STRICT FILTERS)
         # EMA 200 & 50 Alignment is now MANDATORY for trend-following accuracy
         if "EMA_200" in indicators and "EMA_50" in indicators:
@@ -110,9 +122,11 @@ class IndicatorService:
             if ema200 and ema50:
                 if current_price > ema200 and ema50 > ema200:
                     buy_score += indicator_configs["EMA_200"].weight + indicator_configs["EMA_50"].weight
+                    buy_hits += 1
                     details.append("Trend: Price > EMA50 > EMA200 (Strong Bullish)")
                 elif current_price < ema200 and ema50 < ema200:
                     sell_score += indicator_configs["EMA_200"].weight + indicator_configs["EMA_50"].weight
+                    sell_hits += 1
                     details.append("Trend: Price < EMA50 < EMA200 (Strong Bearish)")
                 else:
                     # Si no están alineadas, simplemente no sumamos puntos de tendencia, pero permitimos continuar
@@ -126,9 +140,11 @@ class IndicatorService:
             if ema9 and ema20 and ema50:
                 if ema9 > ema20 > ema50:
                     buy_score += indicator_configs["EMA_9"].weight # Assuming EMA_9 weight for alignment
+                    buy_hits += 1
                     details.append("EMA Alignment: 9>20>50 (Bullish)")
                 elif ema9 < ema20 < ema50:
                     sell_score += indicator_configs["EMA_9"].weight # Assuming EMA_9 weight for alignment
+                    sell_hits += 1
                     details.append("EMA Alignment: 9<20<50 (Bearish)")
 
         # Parabolic SAR
@@ -136,9 +152,11 @@ class IndicatorService:
             sar = indicators["PARABOLIC_SAR"]
             if current_price > sar:
                 buy_score += indicator_configs["PARABOLIC_SAR"].weight
+                buy_hits += 1
                 details.append("SAR: Below price (Bullish)")
             else:
                 sell_score += indicator_configs["PARABOLIC_SAR"].weight
+                sell_hits += 1
                 details.append("SAR: Above price (Bearish)")
 
         # Ichimoku
@@ -146,9 +164,11 @@ class IndicatorService:
             ichi = indicators["ICHIMOKU"]
             if ichi.get("signal") == "BUY":
                 buy_score += indicator_configs["ICHIMOKU"].weight
+                buy_hits += 1
                 details.append("Ichimoku: Above cloud (Bullish)")
             elif ichi.get("signal") == "SELL":
                 sell_score += indicator_configs["ICHIMOKU"].weight
+                sell_hits += 1
                 details.append("Ichimoku: Below cloud (Bearish)")
 
         # ADX/DMI
@@ -157,9 +177,11 @@ class IndicatorService:
             if adx_data.get("adx", 0) > indicator_configs["ADX_DMI"].parameters.get("threshold", 25):
                 if adx_data.get("plus_di", 0) > adx_data.get("minus_di", 0):
                     buy_score += indicator_configs["ADX_DMI"].weight
+                    buy_hits += 1
                     details.append(f"ADX: {adx_data['adx']:.1f} +DI>-DI (Bullish)")
                 else:
                     sell_score += indicator_configs["ADX_DMI"].weight
+                    sell_hits += 1
                     details.append(f"ADX: {adx_data['adx']:.1f} -DI>+DI (Bearish)")
 
         # Layer 3: Momentum Triggers
@@ -175,9 +197,11 @@ class IndicatorService:
             rsi_overbought = indicator_configs["RSI"].parameters.get("overbought", 70)
             if rsi < rsi_oversold:
                 buy_score += indicator_configs["RSI"].weight
+                buy_hits += 1
                 details.append(f"RSI: {rsi:.1f} Oversold (Buy)")
             elif rsi > rsi_overbought:
                 sell_score += indicator_configs["RSI"].weight
+                sell_hits += 1
                 details.append(f"RSI: {rsi:.1f} Overbought (Sell)")
             # Trend confirmation: RSI in bullish territory but not overbought
             elif 50 < rsi < rsi_overbought:
@@ -195,9 +219,11 @@ class IndicatorService:
             k, d = stoch.get("k", 50), stoch.get("d", 50)
             if k < stoch_oversold and d < stoch_oversold:
                 buy_score += indicator_configs["STOCHASTIC"].weight
+                buy_hits += 1
                 details.append("Stochastic: Oversold (Buy)")
             elif k > stoch_overbought and d > stoch_overbought:
                 sell_score += indicator_configs["STOCHASTIC"].weight
+                sell_hits += 1
                 details.append("Stochastic: Overbought (Sell)")
             # Bullish cross in neutral zone
             elif k > d and k < stoch_overbought:
@@ -212,9 +238,11 @@ class IndicatorService:
             macd_data = indicators["MACD"]
             if macd_data.get("histogram", 0) > 0 and macd_data.get("macd", 0) > macd_data.get("signal", 0):
                 buy_score += indicator_configs["MACD"].weight
+                buy_hits += 1
                 details.append("MACD: Bullish crossover")
             elif macd_data.get("histogram", 0) < 0 and macd_data.get("macd", 0) < macd_data.get("signal", 0):
                 sell_score += indicator_configs["MACD"].weight
+                sell_hits += 1
                 details.append("MACD: Bearish crossover")
 
         # CCI
@@ -224,9 +252,11 @@ class IndicatorService:
             cci_overbought = indicator_configs["CCI"].parameters.get("upper", 100)
             if cci < cci_oversold:
                 buy_score += indicator_configs["CCI"].weight
+                buy_hits += 1
                 details.append(f"CCI: {cci:.1f} Oversold (Buy)")
             elif cci > cci_overbought:
                 sell_score += indicator_configs["CCI"].weight
+                sell_hits += 1
                 details.append(f"CCI: {cci:.1f} Overbought (Sell)")
             elif 0 < cci < cci_overbought:
                 buy_score += indicator_configs["CCI"].weight * 0.5
@@ -240,9 +270,11 @@ class IndicatorService:
             ao = indicators["AWESOME_OSCILLATOR"]
             if ao.get("signal") == "BUY":
                 buy_score += indicator_configs["AWESOME_OSCILLATOR"].weight
+                buy_hits += 1
                 details.append("AO: Saucer Buy signal")
             elif ao.get("signal") == "SELL":
                 sell_score += indicator_configs["AWESOME_OSCILLATOR"].weight
+                sell_hits += 1
                 details.append("AO: Saucer Sell signal")
 
         # Layer 2: Volatility / Value Zones
@@ -251,9 +283,11 @@ class IndicatorService:
             bb = indicators["BOLLINGER_BANDS"]
             if current_price <= bb.get("lower", 0):
                 buy_score += indicator_configs["BOLLINGER_BANDS"].weight
+                buy_hits += 1
                 details.append("BB: Price at lower band (Buy)")
             elif current_price >= bb.get("upper", float("inf")):
                 sell_score += indicator_configs["BOLLINGER_BANDS"].weight
+                sell_hits += 1
                 details.append("BB: Price at upper band (Sell)")
 
         # Williams %R
@@ -263,9 +297,11 @@ class IndicatorService:
             wr_overbought = indicator_configs["WILLIAMS_R"].parameters.get("overbought", -20)
             if wr < wr_oversold:
                 buy_score += indicator_configs["WILLIAMS_R"].weight
+                buy_hits += 1
                 details.append(f"Williams %R: {wr:.1f} Oversold (Buy)")
             elif wr > wr_overbought:
                 sell_score += indicator_configs["WILLIAMS_R"].weight
+                sell_hits += 1
                 details.append(f"Williams %R: {wr:.1f} Overbought (Sell)")
 
         # Keltner Channels
@@ -273,9 +309,11 @@ class IndicatorService:
             kc = indicators["KELTNER_CHANNELS"]
             if current_price > kc.get("upper", float("inf")):
                 buy_score += indicator_configs["KELTNER_CHANNELS"].weight
+                buy_hits += 1
                 details.append("Keltner: Breakout above (Buy)")
             elif current_price < kc.get("lower", 0):
                 sell_score += indicator_configs["KELTNER_CHANNELS"].weight
+                sell_hits += 1
                 details.append("Keltner: Breakout below (Sell)")
 
         # Volume Confirmation
@@ -284,9 +322,11 @@ class IndicatorService:
             if vol.get("above_average", False):
                 if buy_score > sell_score:
                     buy_score += indicator_configs["VOLUME_MA"].weight
+                    buy_hits += 1
                     details.append("Volume: Above average (Confirmed)")
                 elif sell_score > buy_score:
                     sell_score += indicator_configs["VOLUME_MA"].weight
+                    sell_hits += 1
                     details.append("Volume: Above average (Confirmed)")
             else:
                 details.append("Volume: Below average")
@@ -298,9 +338,11 @@ class IndicatorService:
             mfi_overbought = indicator_configs["MFI"].parameters.get("overbought", 80)
             if mfi < mfi_oversold:
                 buy_score += indicator_configs["MFI"].weight
+                buy_hits += 1
                 details.append(f"MFI: {mfi:.1f} Oversold (Buy)")
             elif mfi > mfi_overbought:
                 sell_score += indicator_configs["MFI"].weight
+                sell_hits += 1
                 details.append(f"MFI: {mfi:.1f} Overbought (Sell)")
 
         # Determine direction based on weighted scores.
@@ -316,12 +358,20 @@ class IndicatorService:
         # Usamos una base de 12 indicadores relevantes para el cálculo del ratio de puntuación
         min_score_for_signal = max_possible_score * (min_indicators / 12)
 
-        # Calculate how many indicators actually triggered for the winning side
-        indicators_met = len([d for d in details if ("Buy" in d or "Bullish" in d or "Oversold" in d or "crossover" in d or "above" in d)]) if buy_score > sell_score else len([d for d in details if ("Sell" in d or "Bearish" in d or "Overbought" in d or "crossover" in d or "below" in d)])
+        # Conteo real y confiable de indicadores que confirmaron el lado ganador
+        # (antes: búsqueda de substrings en `details`, propensa a falsos positivos)
+        indicators_met = buy_hits if buy_score > sell_score else sell_hits
 
-        if buy_score > sell_score and indicators_met >= min_indicators:
+        # CAMBIO (fix): antes `min_score_for_signal` se calculaba pero NUNCA se
+        # usaba en la condición final -> variable muerta. Ahora se exige
+        # también alcanzar el score ponderado mínimo, no solo el conteo de
+        # indicadores, para evitar señales con muchos indicadores "débiles"
+        # (peso bajo) pero baja convicción total.
+        if (buy_score > sell_score and indicators_met >= min_indicators
+                and buy_score >= min_score_for_signal):
             return "BUY", indicators_met, details
-        elif sell_score > buy_score and indicators_met >= min_indicators:
+        elif (sell_score > buy_score and indicators_met >= min_indicators
+                and sell_score >= min_score_for_signal):
             return "SELL", indicators_met, details
         else:
             return "NEUTRAL", indicators_met, details

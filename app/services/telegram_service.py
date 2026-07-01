@@ -62,9 +62,9 @@ class TelegramService:
             f"📊 Dirección: <b>{signal.direction.value}</b>\n"
             f"💰 Entrada: <code>{signal.entry_price}</code>\n"
             f"🛑 Stop Loss: <code>{signal.stop_loss}</code> ({signal.sl_pips} pips)\n"
-            f"🎯 TP1 (1:3): <code>{signal.take_profit_1}</code> ({signal.tp1_pips} pips)\n"
-            f"🎯 TP2 (1:6): <code>{signal.take_profit_2}</code> ({signal.tp2_pips} pips)\n"
-            f"🎯 TP3 (1:10): <code>{signal.take_profit_3}</code> ({signal.tp3_pips} pips)\n"
+            f"🎯 TP1 (1R, cierra 50%): <code>{signal.take_profit_1}</code> ({signal.tp1_pips} pips)\n"
+            f"🎯 TP2 (2R, cierra 25%): <code>{signal.take_profit_2}</code> ({signal.tp2_pips} pips)\n"
+            f"🎯 TP3 (3R, cierra resto): <code>{signal.take_profit_3}</code> ({signal.tp3_pips} pips)\n"
             f"📐 Lotaje: <code>{signal.lot_size}</code>\n"
             f"⏱ Timeframe: {signal.timeframe}\n"
             f"🏦 Sesión: {signal.session}\n"
@@ -72,6 +72,33 @@ class TelegramService:
             f"⭐ Score: {signal.score}%\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"🕐 {signal.created_at.strftime('%Y-%m-%d %H:%M:%S') if signal.created_at else ''}"
+        )
+
+        return await self.send_message(message)
+
+    async def send_partial_close_notification(
+        self, signal, level: str, exit_price: float,
+        closed_lot: float, leg_profit_loss: float, remaining_lot_size: float
+    ) -> bool:
+        """
+        Notifica un cierre PARCIAL (TP1 o TP2). La posición sigue activa con
+        el lotaje restante; el SL ya fue movido a breakeven (TP1) o a TP1
+        (TP2) para proteger lo ganado.
+        """
+        emoji = "✅" if leg_profit_loss > 0 else "⚠️"
+        sl_note = "breakeven (entrada)" if level == "TP1" else "TP1 (ganancia asegurada)"
+
+        message = (
+            f"{emoji} <b>CIERRE PARCIAL {level} - {signal.asset}</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"🆔 ID: {signal.id}\n"
+            f"💰 Precio: <code>{exit_price}</code>\n"
+            f"📐 Lotaje cerrado: <code>{closed_lot}</code>\n"
+            f"💵 Ganancia parcial: <code>${leg_profit_loss:.2f}</code>\n"
+            f"📦 Lotaje restante: <code>{remaining_lot_size}</code>\n"
+            f"🛡️ SL movido a: {sl_note}\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         )
 
         return await self.send_message(message)

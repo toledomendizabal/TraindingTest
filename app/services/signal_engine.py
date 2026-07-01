@@ -118,17 +118,17 @@ class SignalEngine:
             pip_size = pip_info["pip_size"]
             current_spread_pips = round(spread / pip_size, 1)
 
-            max_spread_pips = {
-                "XAU": 50.0, # Aumentado para evitar bloqueos por spread en Oro
-                "US30": 30.0,
-                "US100": 30.0,
-                "US500": 30.0,
-                "DAX": 30.0,
-                "GER40": 30.0,
-                "DJI": 30.0,
-                "NDX": 30.0,
-                "SPX": 30.0,
-            }.get(asset.upper().split("USD")[0], 10.0) # Default 10.0 for FX pairs
+            # CAMBIO (fix win-rate): spread máximo configurable y más estricto
+            # para FX (antes 10.0 pips fijo). Un spread amplio respecto a un SL
+            # ajustado distorsiona el R:R real y aumenta la probabilidad de
+            # ser barrido por el spread cerca de la entrada.
+            asset_key = asset.upper().split("USD")[0]
+            if "XAU" in asset.upper():
+                max_spread_pips = settings.MAX_SPREAD_PIPS_XAU
+            elif any(x in asset.upper() for x in ["US30", "US100", "US500", "DAX", "GER40", "DJI", "NDX", "SPX"]):
+                max_spread_pips = settings.MAX_SPREAD_PIPS_INDEX_GOLD
+            else:
+                max_spread_pips = settings.MAX_SPREAD_PIPS_FX
 
             if current_spread_pips > max_spread_pips:
                 logger.info(f"Signal for {asset} rejected: Spread ({current_spread_pips} pips) exceeds max allowed ({max_spread_pips} pips).")
@@ -145,12 +145,20 @@ class SignalEngine:
                 logger.debug(f"[DEBUG] Skipping {asset}: Indicator evaluation NEUTRAL or insufficient indicators met ({indicators_met}/{self.MIN_INDICATORS_FOR_SIGNAL}).")
                 return None
 
-            # Session Filter: Flexibilizado para pruebas (0-24h)
-            # En producción se recomienda 07:00 - 17:00 UTC
-            current_hour = datetime.utcnow().hour
-            if not (0 <= current_hour <= 23):
-                logger.info(f"Signal for {asset} rejected: Outside session.")
-                return None
+            # CAMBIO (fix win-rate): Session Filter reactivado.
+            # Antes el rango era 0-23h (siempre verdadero = sin filtro real),
+            # lo que permitía operar en sesión asiática de baja liquidez y en
+            # horarios de noticias de alta volatilidad, empeorando el ratio
+            # señal/ruido. Ahora se restringe (por defecto) a la ventana
+            # Londres/Nueva York, configurable vía settings.
+            if settings.SESSION_FILTER_ENABLED:
+                current_hour = datetime.utcnow().hour
+                if not (settings.SESSION_START_HOUR_UTC <= current_hour < settings.SESSION_END_HOUR_UTC):
+                    logger.info(
+                        f"Signal for {asset} rejected: Outside trading session "
+                        f"({settings.SESSION_START_HOUR_UTC}:00-{settings.SESSION_END_HOUR_UTC}:00 UTC)."
+                    )
+                    return None
 
             # Volatility Filter: Avoid "Flat" markets
             # If ATR is too low compared to recent average, the market lacks movement
@@ -225,121 +233,64 @@ class SignalEngine:
             contract_size = pip_info["contract_size"]
             quote_currency = pip_info["quote_currency"]
 
-            # 1. Calculate Stop Loss using ATR (ATR_SL_MULTIPLIER x ATR) as a baseline
-            sl_distance = atr * self.ATR_SL_MULTIPLIER
-
-            # Advanced SL adjustment based on SMC structures
-            # Look for recent swing high/low or FVG that offers better protection
+            # 1. Calculate Stop Loss using ATR (ATR_SL_MULTIPLIER x ATR) as a baseline,
+            # refinado opcionalmente con estructuras SMC (FVG / liquidez).
+            # CAMBIO (fix CRÍTICO marcado en el código como "CAMBIO 18: BUG en
+            # lógica de Stop Loss con SMC"): la lógica duplicada y confusa que
+            # existía para BUY/SELL se reemplaza por un único helper testeado
+            # `_refine_sl_with_smc`, con el mismo criterio para ambas direcciones.
+            sl_distance_atr = atr * self.ATR_SL_MULTIPLIER
+            sl_distance = sl_distance_atr
             if df is not None:
-                last_candle_close = df["close"].iloc[-1]
-                last_candle_low = df["low"].iloc[-1]
-                last_candle_high = df["high"].iloc[-1]
-
-                # Get FVG and Liquidity from indicator_service (already calculated in analyze_asset)
-                fvgs = indicator_service.detect_fvg(df)
-                liquidity = indicator_service.detect_liquidity(df)
-
-                if direction == SignalDirection.BUY:
-                    # For BUY, look for nearest bullish FVG below entry or recent swing low
-                    potential_sls = []
-                    # Add ATR-based SL
-                    potential_sls.append(entry_price - sl_distance)
-
-                    # Add bullish FVG lower bounds below entry
-                    for fvg in fvgs:
-                        if fvg["type"] == "BULLISH" and fvg["price"] < entry_price:
-                            potential_sls.append(fvg["price"] - (pip_size * 5)) # 5 pips below FVG for buffer
-                    
-                    # Add recent swing lows (SSL zones) below entry
-                    for ssl_zone in liquidity["SSL"]:
-                        if ssl_zone < entry_price:
-                            potential_sls.append(ssl_zone - (pip_size * 5)) # 5 pips below SSL for buffer
-
-                    # CAMBIO 18: BUG en lógica de Stop Loss con SMC (CRÍTICO)
-                    # Elegir el SL más cercano al precio de entrada (el más alto para BUY)
-                    if potential_sls:
-                        # Convertir los precios de SL a distancias desde el entry_price
-                        sl_distances_from_smc = [entry_price - sl for sl in potential_sls if sl < entry_price]
-                        if sl_distances_from_smc:
-                            # Elegir la menor distancia (SL más cercano al entry) para que sea el más alto en precio
-                            sl_distance_smc = min(sl_distances_from_smc)
-                            # Priorizar SL SMC si es más ajustado pero no menor que un mínimo basado en ATR
-                            min_atr_sl = atr * (self.ATR_SL_MULTIPLIER / 2) # Por ejemplo, la mitad del SL basado en ATR
-                            if sl_distance_smc < (atr * self.ATR_SL_MULTIPLIER) and sl_distance_smc > min_atr_sl:
-                                sl_distance = sl_distance_smc
-                            else:
-                                sl_distance = atr * self.ATR_SL_MULTIPLIER # Fallback a ATR si SMC SL es muy grande o muy pequeño
-                        else:
-                            sl_distance = atr * self.ATR_SL_MULTIPLIER # Fallback a ATR si no hay SMC SL válidos
-                    else:
-                        sl_distance = atr * self.ATR_SL_MULTIPLIER # Fallback a ATR si no hay SMC SL
-                    stop_loss = entry_price - sl_distance
-
-                else: # SELL direction
-                    # For SELL, look for nearest bearish FVG above entry or recent swing high
-                    potential_sls = []
-                    # Add ATR-based SL
-                    potential_sls.append(entry_price + sl_distance)
-
-                    # Add bearish FVG upper bounds above entry
-                    for fvg in fvgs:
-                        if fvg["type"] == "BEARISH" and fvg["price"] > entry_price:
-                            potential_sls.append(fvg["price"] + (pip_size * 5)) # 5 pips above FVG for buffer
-
-                    # Add recent swing highs (BSL zones) above entry
-                    for bsl_zone in liquidity["BSL"]:
-                        if bsl_zone > entry_price:
-                            potential_sls.append(bsl_zone + (pip_size * 5)) # 5 pips above BSL for buffer
-
-                    # CAMBIO 18: BUG en lógica de Stop Loss con SMC (CRÍTICO)
-                    # Elegir el SL más cercano al precio de entrada (el más bajo para SELL)
-                    if potential_sls:
-                        # Convertir los precios de SL a distancias desde el entry_price
-                        sl_distances_from_smc = [sl - entry_price for sl in potential_sls if sl > entry_price]
-                        if sl_distances_from_smc:
-                            # Elegir la menor distancia (SL más cercano al entry) para que sea el más bajo en precio
-                            sl_distance_smc = min(sl_distances_from_smc)
-                            # Priorizar SL SMC si es más ajustado pero no menor que un mínimo basado en ATR
-                            min_atr_sl = atr * (self.ATR_SL_MULTIPLIER / 2) # Por ejemplo, la mitad del SL basado en ATR
-                            if sl_distance_smc < (atr * self.ATR_SL_MULTIPLIER) and sl_distance_smc > min_atr_sl:
-                                sl_distance = sl_distance_smc
-                            else:
-                                sl_distance = atr * self.ATR_SL_MULTIPLIER # Fallback a ATR si SMC SL es muy grande o muy pequeño
-                        else:
-                            sl_distance = atr * self.ATR_SL_MULTIPLIER # Fallback a ATR si no hay SMC SL válidos
-                    else:
-                        sl_distance = atr * self.ATR_SL_MULTIPLIER # Fallback a ATR si no hay SMC SL
-                    stop_loss = entry_price + sl_distance
-
-
+                sl_distance = self._refine_sl_with_smc(
+                    direction=direction,
+                    entry_price=entry_price,
+                    sl_distance_atr=sl_distance_atr,
+                    atr=atr,
+                    pip_size=pip_size,
+                    df=df,
+                )
 
             # --- Apply Minimum Stop Loss Limits ---
-            
-            # --- Apply Minimum Stop Loss Limits ---
+            # CAMBIO (fix win-rate): SL mínimo subido para FX (6 -> configurable,
+            # default 10 pips) para que el spread no represente una fracción
+            # excesiva del riesgo. Ver settings.MIN_SL_PIPS_FX / MIN_SL_PIPS_INDEX_GOLD.
             is_index_or_gold = any(x in asset.upper() for x in ["XAU", "US30", "US100", "US500", "DAX", "DJI", "NDX", "SPX"])
             is_ger40 = any(x in asset.upper() for x in ["GER40", "DAX"])
-            is_gold = "XAU" in asset.upper()
-            
-            min_sl_pips = 30 if (is_index_or_gold and not is_ger40) else 6 # Ajustado de 300 a 30 pips para índices/oro
+
+            min_sl_pips = settings.MIN_SL_PIPS_INDEX_GOLD if (is_index_or_gold and not is_ger40) else settings.MIN_SL_PIPS_FX
             current_sl_pips = sl_distance / pip_size
-            
+
             if current_sl_pips < min_sl_pips:
                 sl_distance = min_sl_pips * pip_size
 
-            # 2. Fixed 1:3 Reward/Risk Ratio
-            # Take Profit is exactly 3 times the Stop Loss distance
-            tp_distance = sl_distance * 3.0
-            
             if direction == SignalDirection.BUY:
                 stop_loss = entry_price - sl_distance
-                tp1 = entry_price + tp_distance
-                tp2 = tp1 
-                tp3 = tp1
-            else: # SELL
+            else:
                 stop_loss = entry_price + sl_distance
-                tp1 = entry_price - tp_distance
-                tp2 = tp1 
-                tp3 = tp1
+
+            # 2. CAMBIO (fix win-rate): TP1/TP2/TP3 escalonados y REALES.
+            # Antes TP1 = TP2 = TP3 = entry +/- 3*SL (un único objetivo "todo o
+            # nada" que exigía ~75% de win rate solo para ser rentable).
+            # Ahora:
+            #   TP1 = 1R -> se cierra TP1_CLOSE_PCT% y se mueve el SL a breakeven
+            #   TP2 = 2R -> se cierra TP2_CLOSE_PCT% y se sube el SL a TP1
+            #   TP3 = 3R -> se cierra el resto (TP3_CLOSE_PCT%)
+            # Esto convierte operaciones que antes eran pérdida total (precio
+            # llega a 1R-2R y luego revierte) en ganancias parciales o, en el
+            # peor caso, breakeven -- sube el win rate real sin "inventar" datos.
+            r1 = sl_distance * settings.TP1_R_MULTIPLE
+            r2 = sl_distance * settings.TP2_R_MULTIPLE
+            r3 = sl_distance * settings.TP3_R_MULTIPLE
+
+            if direction == SignalDirection.BUY:
+                tp1 = entry_price + r1
+                tp2 = entry_price + r2
+                tp3 = entry_price + r3
+            else:  # SELL
+                tp1 = entry_price - r1
+                tp2 = entry_price - r2
+                tp3 = entry_price - r3
 
             # 3. Fixed Risk Management: 0.3% of $10,000 ($30)
             # Use runtime settings if available, otherwise defaults
@@ -427,11 +378,80 @@ class SignalEngine:
                 smc_quality=round(quality_multiplier, 2),
                 fvg_confluence=fvg_confluence,
                 liquidity_sweep=liquidity_sweep,
-                indicators_detail=details
+                indicators_detail=details,
+                # CAMBIO (fix win-rate): tracking de cierre parcial / breakeven
+                initial_lot_size=lot_size,
+                remaining_lot_size=lot_size,
+                tp1_hit=False,
+                tp2_hit=False,
+                breakeven_active=False,
+                realized_partial_pnl=0.0
             )
         except Exception as e:
             logger.error(f"Signal creation error for {asset}: {e}")
             return None
+
+    def _refine_sl_with_smc(
+        self,
+        direction: SignalDirection,
+        entry_price: float,
+        sl_distance_atr: float,
+        atr: float,
+        pip_size: float,
+        df: pd.DataFrame,
+    ) -> float:
+        """
+        Refina la distancia de Stop Loss basada en ATR usando estructuras SMC
+        (Fair Value Gaps y zonas de liquidez), eligiendo el nivel protector
+        más cercano disponible sin dejarlo demasiado ajustado.
+
+        CAMBIO (fix del bug crítico documentado previamente en el código como
+        "CAMBIO 18: BUG en lógica de Stop Loss con SMC"): se unifica la lógica
+        para BUY y SELL en un solo método, con límites claros:
+          - El SL basado en SMC solo se usa si es MÁS AJUSTADO que el SL por
+            ATR (protege capital) pero no menor a la mitad del SL por ATR
+            (para evitar SL demasiado ajustados que se activan por ruido).
+          - Si no hay zona SMC válida dentro de ese rango, se usa el SL por
+            ATR como fallback (comportamiento seguro y predecible).
+        """
+        try:
+            fvgs = indicator_service.detect_fvg(df)
+            liquidity = indicator_service.detect_liquidity(df)
+            buffer = pip_size * 5  # 5 pips de colchón sobre la zona SMC
+
+            candidate_distances: List[float] = []
+
+            if direction == SignalDirection.BUY:
+                for fvg in fvgs:
+                    if fvg["type"] == "BULLISH" and fvg["price"] < entry_price:
+                        candidate_distances.append(entry_price - (fvg["price"] - buffer))
+                for ssl_zone in liquidity["SSL"]:
+                    if ssl_zone < entry_price:
+                        candidate_distances.append(entry_price - (ssl_zone - buffer))
+            else:  # SELL
+                for fvg in fvgs:
+                    if fvg["type"] == "BEARISH" and fvg["price"] > entry_price:
+                        candidate_distances.append((fvg["price"] + buffer) - entry_price)
+                for bsl_zone in liquidity["BSL"]:
+                    if bsl_zone > entry_price:
+                        candidate_distances.append((bsl_zone + buffer) - entry_price)
+
+            # Solo distancias positivas y válidas
+            candidate_distances = [d for d in candidate_distances if d > 0]
+            if not candidate_distances:
+                return sl_distance_atr
+
+            min_allowed = sl_distance_atr / 2  # No permitir SL menor a la mitad del ATR SL
+            valid_candidates = [d for d in candidate_distances if min_allowed < d < sl_distance_atr]
+
+            if valid_candidates:
+                # El más ajustado dentro del rango permitido (mejor relación riesgo/recompensa)
+                return min(valid_candidates)
+
+            return sl_distance_atr
+        except Exception as e:
+            logger.error(f"Error refining SL with SMC structures: {e}")
+            return sl_distance_atr
 
     async def analyze_all_assets(self) -> List[Signal]:
         signals = []

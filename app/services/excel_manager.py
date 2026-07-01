@@ -85,7 +85,10 @@ class ExcelManager:
             "close_price", "profit_loss", "result",
             "max_drawdown", "risk_reward_ratio", "duration_minutes",
             "entry_hour", "exit_hour", "entry_spread", "entry_atr",
-            "smc_quality", "fvg_confluence", "liquidity_sweep"
+            "smc_quality", "fvg_confluence", "liquidity_sweep",
+            # CAMBIO (fix win-rate): columnas para cierre parcial escalonado
+            "initial_lot_size", "remaining_lot_size",
+            "tp1_hit", "tp2_hit", "breakeven_active", "realized_partial_pnl"
         ]
         df = pd.DataFrame(columns=columns)
         df.to_excel(self.signals_file, index=False, sheet_name="Signals")
@@ -172,7 +175,13 @@ class ExcelManager:
                 "entry_atr": signal.entry_atr,
                 "smc_quality": getattr(signal, "smc_quality", 1.0),
                 "fvg_confluence": getattr(signal, "fvg_confluence", False),
-                "liquidity_sweep": getattr(signal, "liquidity_sweep", False)
+                "liquidity_sweep": getattr(signal, "liquidity_sweep", False),
+                "initial_lot_size": getattr(signal, "initial_lot_size", signal.lot_size),
+                "remaining_lot_size": getattr(signal, "remaining_lot_size", signal.lot_size),
+                "tp1_hit": getattr(signal, "tp1_hit", False),
+                "tp2_hit": getattr(signal, "tp2_hit", False),
+                "breakeven_active": getattr(signal, "breakeven_active", False),
+                "realized_partial_pnl": getattr(signal, "realized_partial_pnl", 0.0)
             }
 
             df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
@@ -217,13 +226,23 @@ class ExcelManager:
                 df.at[idx, "closed_at"] = datetime.now().isoformat()
                 df.at[idx, "close_price"] = float(close_price)
                 df.at[idx, "profit_loss"] = float(profit_loss)
-                df.at[idx, "result"] = "WIN" if profit_loss > 0 else "LOSS"
+                df.at[idx, "result"] = "WIN" if profit_loss > 0 else ("BREAKEVEN" if profit_loss == 0 else "LOSS")
                 
                 if sig_obj:
                     df.at[idx, "max_drawdown"] = float(sig_obj.max_drawdown)
                     df.at[idx, "risk_reward_ratio"] = float(sig_obj.risk_reward_ratio)
                     df.at[idx, "duration_minutes"] = float(sig_obj.duration_minutes)
                     df.at[idx, "exit_hour"] = str(sig_obj.exit_hour)
+                    if "remaining_lot_size" in df.columns:
+                        df.at[idx, "remaining_lot_size"] = float(getattr(sig_obj, "remaining_lot_size", 0.0))
+                    if "tp1_hit" in df.columns:
+                        df.at[idx, "tp1_hit"] = bool(getattr(sig_obj, "tp1_hit", False))
+                    if "tp2_hit" in df.columns:
+                        df.at[idx, "tp2_hit"] = bool(getattr(sig_obj, "tp2_hit", False))
+                    if "breakeven_active" in df.columns:
+                        df.at[idx, "breakeven_active"] = bool(getattr(sig_obj, "breakeven_active", False))
+                    if "realized_partial_pnl" in df.columns:
+                        df.at[idx, "realized_partial_pnl"] = float(getattr(sig_obj, "realized_partial_pnl", 0.0))
 
                 df.to_excel(self.signals_file, index=False, sheet_name="Signals")
                 logger.bind(module="monitoring").info(
@@ -235,6 +254,58 @@ class ExcelManager:
 
         except Exception as e:
             logger.error(f"Error updating signal in Excel: {e}")
+            return False
+
+    async def register_partial_close(
+        self, signal_id: str, level: str, exit_price: float,
+        closed_lot: float, leg_profit_loss: float, remaining_lot_size: float
+    ) -> bool:
+        """
+        Registra un cierre PARCIAL (TP1/TP2) en Excel sin marcar la señal
+        como cerrada del todo. La señal sigue ACTIVE hasta que se cierre el
+        remanente (TP3, SL/breakeven).
+
+        CAMBIO (fix win-rate): antes no existía el concepto de cierre
+        parcial; cada señal sólo tenía un evento de cierre único y total.
+        """
+        try:
+            df = pd.read_excel(self.signals_file, sheet_name="Signals")
+
+            for col in ["lot_size", "remaining_lot_size", "realized_partial_pnl", "profit_loss"]:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors="coerce").astype(float)
+            for col in ["tp1_hit", "tp2_hit", "breakeven_active"]:
+                if col in df.columns:
+                    df[col] = df[col].fillna(False)
+
+            mask = df["id"] == str(signal_id)
+            if mask.any():
+                idx = df.index[mask][0]
+                if "remaining_lot_size" in df.columns:
+                    df.at[idx, "remaining_lot_size"] = float(remaining_lot_size)
+                if "lot_size" in df.columns:
+                    df.at[idx, "lot_size"] = float(remaining_lot_size)
+                if level == "TP1" and "tp1_hit" in df.columns:
+                    df.at[idx, "tp1_hit"] = True
+                    df.at[idx, "breakeven_active"] = True
+                if level == "TP2" and "tp2_hit" in df.columns:
+                    df.at[idx, "tp2_hit"] = True
+
+                if "realized_partial_pnl" in df.columns:
+                    prev = df.at[idx, "realized_partial_pnl"]
+                    prev = float(prev) if pd.notna(prev) else 0.0
+                    df.at[idx, "realized_partial_pnl"] = round(prev + leg_profit_loss, 2)
+
+                df.to_excel(self.signals_file, index=False, sheet_name="Signals")
+                logger.bind(module="signals").info(
+                    f"Partial close registered for {signal_id} at {level}: "
+                    f"closed {closed_lot} lots, P/L ${leg_profit_loss:.2f}, remaining {remaining_lot_size} lots"
+                )
+                return True
+
+            return False
+        except Exception as e:
+            logger.error(f"Error registering partial close in Excel: {e}")
             return False
 
     def has_active_signal(self, asset: str) -> bool:

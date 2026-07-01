@@ -12,10 +12,11 @@ class SignalDirection(str, Enum):
 
 class SignalStatus(str, Enum):
     ACTIVE = "ACTIVE"
-    CLOSED_TP1 = "CLOSED_TP1"
-    CLOSED_TP2 = "CLOSED_TP2"
-    CLOSED_TP3 = "CLOSED_TP3"
-    CLOSED_SL = "CLOSED_SL"
+    CLOSED_TP1 = "CLOSED_TP1"          # Cierre total en TP1 (legacy / sin partials)
+    CLOSED_TP2 = "CLOSED_TP2"          # Cierre total en TP2 (legacy / sin partials)
+    CLOSED_TP3 = "CLOSED_TP3"          # Cierre final tras pasar por TP1 y TP2 parciales
+    CLOSED_SL = "CLOSED_SL"            # Stop Loss original alcanzado (pérdida total)
+    CLOSED_BE = "CLOSED_BE"            # SL movido a breakeven tras TP1 y alcanzado (ganancia parcial protegida, sin pérdida)
     EXPIRED = "EXPIRED"
 
 
@@ -26,9 +27,9 @@ class Signal(BaseModel):
     direction: SignalDirection
     entry_price: float
     stop_loss: float
-    take_profit_1: float  # R:R 1:3
-    take_profit_2: float  # R:R 1:6
-    take_profit_3: float  # R:R 1:10
+    take_profit_1: float  # TP1 = 1R (cierra TP1_CLOSE_PCT%, mueve SL a breakeven)
+    take_profit_2: float  # TP2 = 2R (cierra TP2_CLOSE_PCT%, mueve SL a TP1)
+    take_profit_3: float  # TP3 = 3R (cierra el remanente)
     sl_pips: float
     tp1_pips: float
     tp2_pips: float
@@ -56,6 +57,13 @@ class Signal(BaseModel):
     fvg_confluence: bool = False
     liquidity_sweep: bool = False
     indicators_detail: List[str] = []
+    # --- Partial close / scaled exit tracking (CAMBIO: TP1/TP2/TP3 reales) ---
+    initial_lot_size: float = 0.0       # Lotaje original (para referencia, lot_size queda como remanente)
+    remaining_lot_size: float = 0.0     # Lotaje aún abierto
+    tp1_hit: bool = False
+    tp2_hit: bool = False
+    breakeven_active: bool = False      # True si el SL ya fue movido a entry_price (o mejor)
+    realized_partial_pnl: float = 0.0   # P/L ya materializado por cierres parciales (TP1/TP2)
 
     class Config:
         json_encoders = {
