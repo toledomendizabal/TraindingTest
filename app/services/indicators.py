@@ -354,9 +354,17 @@ class IndicatorService:
         # Calculate max possible score
         max_possible_score = sum(ind.weight for ind in self.indicators if ind.enabled)
 
-        # Calculate threshold based on min_indicators ratio
-        # Usamos una base de 12 indicadores relevantes para el cálculo del ratio de puntuación
-        min_score_for_signal = max_possible_score * (min_indicators / 12)
+        # Calculate threshold based on min_indicators ratio.
+        # CAMBIO (fix "dejó de mandar señales"): antes se usaba una base fija
+        # de "12" indicadores para este cálculo, un número arbitrario que no
+        # correspondía a los 18 indicadores reales habilitados. Con esa base,
+        # el umbral de score exigía en la práctica un peso promedio por
+        # indicador (~1.58) más alto que el peso promedio real de los
+        # indicadores del sistema (~1.06), haciendo el umbral casi
+        # inalcanzable incluso cuando sí había suficientes indicadores
+        # confirmando. Ahora se usa el número real de indicadores habilitados.
+        enabled_count = len([ind for ind in self.indicators if ind.enabled]) or 12
+        min_score_for_signal = max_possible_score * (min_indicators / enabled_count)
 
         # Conteo real y confiable de indicadores que confirmaron el lado ganador
         # (antes: búsqueda de substrings en `details`, propensa a falsos positivos)

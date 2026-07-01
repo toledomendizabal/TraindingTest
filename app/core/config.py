@@ -42,8 +42,14 @@ class Settings(BaseSettings):
     # Session Filter: restrict trading to higher-liquidity hours (UTC).
     # Operar 24h (incluyendo sesión asiática de baja liquidez) degrada el ratio señal/ruido.
     SESSION_FILTER_ENABLED: bool = True
-    SESSION_START_HOUR_UTC: int = 7   # Apertura de Londres
-    SESSION_END_HOUR_UTC: int = 17    # Cierre de solapamiento Londres/NY
+    # CAMBIO (fix "dejó de mandar señales"): la ventana original (07-17 UTC,
+    # 10h/24h = 41.7% del día) era razonable en aislamiento, pero combinada
+    # con el resto de filtros (indicadores, spread, estructura en 30m/1h/4h,
+    # FVG) multiplicaba la restricción hasta casi cero señales. Se amplía a
+    # 06:00-21:00 UTC (15h), que sigue excluyendo la franja de menor liquidez
+    # (21:00-06:00 UTC) pero da más margen. Ajustable según tus activos.
+    SESSION_START_HOUR_UTC: int = 6   # Antes de apertura de Londres
+    SESSION_END_HOUR_UTC: int = 21    # Cierre de Nueva York
 
     # Minimum Stop Loss distances (in pips) per asset class.
     # Subidos respecto al valor anterior (6 pips FX) para que el spread no
@@ -54,7 +60,11 @@ class Settings(BaseSettings):
     # Maximum allowed spread (in pips) per asset class.
     # Bajado respecto al valor anterior (10 pips FX) para evitar que el spread
     # distorsione el R:R real cerca de SL mínimos ajustados.
-    MAX_SPREAD_PIPS_FX: float = 3.0
+    # CAMBIO (fix "dejó de mandar señales"): 3.0 pips resultó demasiado
+    # estricto para spreads reales de bróker en vivo (vía MT4), sobre todo en
+    # pares cruzados o fuera del pico de liquidez. 5.0 sigue siendo más
+    # estricto que el original (10.0) pero no bloquea operativa normal.
+    MAX_SPREAD_PIPS_FX: float = 5.0
     MAX_SPREAD_PIPS_INDEX_GOLD: float = 30.0
     MAX_SPREAD_PIPS_XAU: float = 50.0
 

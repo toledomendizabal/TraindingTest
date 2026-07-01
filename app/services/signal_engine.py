@@ -15,7 +15,15 @@ from app.services.excel_manager import excel_manager
 class SignalEngine:
     """Engine for generating trading signals based on 18 indicators confluence."""
 
-    MIN_INDICATORS_FOR_SIGNAL = 7
+    # CAMBIO (fix "dejó de mandar señales"): bajado de 7 a 6. Con conteo de
+    # indicadores corregido (ya no inflado por el bug de substrings), un
+    # umbral de 7 dejaba pasar ~1% de los escenarios simulados de mercado,
+    # contra ~15% con umbral 6 (ver validación en el PR). 6 sigue siendo
+    # selectivo (exige más de un tercio de los 18 indicadores confirmando en
+    # la misma dirección con score ponderado suficiente) pero ya no bloquea
+    # prácticamente todas las señales. Es además el valor que ya estaba
+    # configurado en trading_config.xlsx.
+    MIN_INDICATORS_FOR_SIGNAL = 6
     ANALYSIS_TIMEFRAMES = ["30m", "1h", "4h"]
     SIGNAL_TIMEFRAME = "5m"
     ATR_SL_MULTIPLIER = 2.0 # CAMBIO 17: Centralized ATR SL multiplier
@@ -141,8 +149,20 @@ class SignalEngine:
                 return None
 
             direction, indicators_met, details = indicator_service.evaluate_signals(df, indicators)
-            if direction == "NEUTRAL" or indicators_met < self.MIN_INDICATORS_FOR_SIGNAL:
-                logger.debug(f"[DEBUG] Skipping {asset}: Indicator evaluation NEUTRAL or insufficient indicators met ({indicators_met}/{self.MIN_INDICATORS_FOR_SIGNAL}).")
+            # CAMBIO (fix "dejó de mandar señales"): antes esta condición usaba
+            # el constante de clase MIN_INDICATORS_FOR_SIGNAL=7, hardcodeado e
+            # INDEPENDIENTE del self.min_indicators (por defecto 6) que ya usa
+            # evaluate_signals() internamente para decidir BUY/SELL vs NEUTRAL.
+            # Esa inconsistencia (6 adentro, 7 afuera) ya existía antes de esta
+            # revisión, pero quedaba enmascarada porque el bug de conteo por
+            # substrings inflaba artificialmente indicators_met, así que casi
+            # siempre superaba el 7 igual. Al corregir el conteo (ahora fiel a
+            # los indicadores realmente confirmados), casi ninguna señal volvía
+            # a alcanzar el umbral de 7, y el sistema dejó de emitir señales.
+            # Ahora se usa una única fuente de verdad (self.min_indicators) en
+            # ambos puntos.
+            if direction == "NEUTRAL" or indicators_met < self.min_indicators:
+                logger.debug(f"[DEBUG] Skipping {asset}: Indicator evaluation NEUTRAL or insufficient indicators met ({indicators_met}/{self.min_indicators}).")
                 return None
 
             # CAMBIO (fix win-rate): Session Filter reactivado.

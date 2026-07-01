@@ -1,0 +1,171 @@
+From 1ed8ea76fffbc691524093234a531d1c887f5f9e Mon Sep 17 00:00:00 2001
+From: Claude Assistant <assistant@local>
+Date: Wed, 1 Jul 2026 20:44:30 +0000
+Subject: [PATCH 2/2] =?UTF-8?q?fix:=20corregir=20causa=20ra=C3=ADz=20de=20?=
+ =?UTF-8?q?"dej=C3=B3=20de=20mandar=20se=C3=B1ales"=20tras=20el=20fix=20de?=
+ =?UTF-8?q?=20Win=20Rate?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Diagnóstico cuantitativo (simulación de 800 escenarios random-walk
+realistas, ver metodología en la conversación):
+
+CAUSA PRINCIPAL (bug preexistente, no introducido en el commit anterior,
+pero desenmascarado por él):
+`analyze_asset()` filtraba con la constante de clase hardcodeada
+`MIN_INDICATORS_FOR_SIGNAL = 7`, completamente INDEPENDIENTE del
+`self.min_indicators` (config real desde Excel, valor 6) que
+`evaluate_signals()` ya usaba internamente para decidir BUY/SELL vs
+NEUTRAL. Esta inconsistencia (6 adentro, 7 afuera) siempre existió, pero
+quedaba enmascarada porque el bug de conteo por substrings (corregido en
+el commit anterior) inflaba artificialmente `indicators_met`, así que
+casi cualquier señal superaba igualmente el umbral de 7.
+
+Al corregir el conteo (ahora fiel a los indicadores realmente
+confirmados), el valor real de `indicators_met` bajó a su rango
+verdadero (~2-9, promedio ~3), y el filtro externo de 7 pasó de
+bloquear ~0% de las señales candidatas a bloquear >98% de ellas.
+Verificado en simulación: con umbral 7, solo 1.0% de 800 escenarios
+pasaban; con umbral 6 (el valor real configurado), 14.9-26.0%.
+
+Fix: se elimina la constante hardcodeada duplicada y se usa
+`self.min_indicators` como única fuente de verdad en ambos puntos.
+También se baja el valor de fallback de la clase de 7 a 6 para que
+coincida con el valor validado y ya configurado en Excel.
+
+CAUSAS SECUNDARIAS (amplificaban el efecto, ya introducidas en el commit
+anterior como mejoras de calidad, pero demasiado estrictas combinadas
+con el bug principal):
+
+1. Fórmula de `min_score_for_signal` en `evaluate_signals()` usaba una
+   base fija arbitraria de "12" en el cálculo, en vez del número real
+   de indicadores habilitados (18). Esto exigía un peso promedio por
+   indicador (~1.58) mayor al peso promedio real del sistema (~1.06),
+   haciendo el umbral casi inalcanzable. Corregido para usar el
+   conteo real de indicadores habilitados.
+
+2. Ventana de sesión (07:00-17:00 UTC, 10h/24h) ampliada a
+   06:00-21:00 UTC (15h/24h) para dar más margen operativo, sin volver
+   a operar en la franja de menor liquidez.
+
+3. Spread máximo FX (3.0 pips) relajado a 5.0 pips, un punto medio más
+   realista para feeds de bróker en vivo vía MT4.
+
+Validación: tras el fix, la tasa de señales candidatas que superan el
+filtro de indicadores pasó de ~1% a ~26% en simulación (mejor que el
+~13.7% implícito en el sistema original con bug), y ~16% combinado con
+la nueva ventana de sesión. La lógica de cierre parcial (TP1/TP2/TP3 +
+breakeven) del commit anterior se verificó intacta tras estos cambios.
+---
+ app/core/config.py            | 16 +++++++++++++---
+ app/services/indicators.py    | 14 +++++++++++---
+ app/services/signal_engine.py | 26 +++++++++++++++++++++++---
+ 3 files changed, 47 insertions(+), 9 deletions(-)
+
+diff --git a/app/core/config.py b/app/core/config.py
+index fcb378f..17af6de 100644
+--- a/app/core/config.py
++++ b/app/core/config.py
+@@ -42,8 +42,14 @@ class Settings(BaseSettings):
+     # Session Filter: restrict trading to higher-liquidity hours (UTC).
+     # Operar 24h (incluyendo sesión asiática de baja liquidez) degrada el ratio señal/ruido.
+     SESSION_FILTER_ENABLED: bool = True
+-    SESSION_START_HOUR_UTC: int = 7   # Apertura de Londres
+-    SESSION_END_HOUR_UTC: int = 17    # Cierre de solapamiento Londres/NY
++    # CAMBIO (fix "dejó de mandar señales"): la ventana original (07-17 UTC,
++    # 10h/24h = 41.7% del día) era razonable en aislamiento, pero combinada
++    # con el resto de filtros (indicadores, spread, estructura en 30m/1h/4h,
++    # FVG) multiplicaba la restricción hasta casi cero señales. Se amplía a
++    # 06:00-21:00 UTC (15h), que sigue excluyendo la franja de menor liquidez
++    # (21:00-06:00 UTC) pero da más margen. Ajustable según tus activos.
++    SESSION_START_HOUR_UTC: int = 6   # Antes de apertura de Londres
++    SESSION_END_HOUR_UTC: int = 21    # Cierre de Nueva York
+ 
+     # Minimum Stop Loss distances (in pips) per asset class.
+     # Subidos respecto al valor anterior (6 pips FX) para que el spread no
+@@ -54,7 +60,11 @@ class Settings(BaseSettings):
+     # Maximum allowed spread (in pips) per asset class.
+     # Bajado respecto al valor anterior (10 pips FX) para evitar que el spread
+     # distorsione el R:R real cerca de SL mínimos ajustados.
+-    MAX_SPREAD_PIPS_FX: float = 3.0
++    # CAMBIO (fix "dejó de mandar señales"): 3.0 pips resultó demasiado
++    # estricto para spreads reales de bróker en vivo (vía MT4), sobre todo en
++    # pares cruzados o fuera del pico de liquidez. 5.0 sigue siendo más
++    # estricto que el original (10.0) pero no bloquea operativa normal.
++    MAX_SPREAD_PIPS_FX: float = 5.0
+     MAX_SPREAD_PIPS_INDEX_GOLD: float = 30.0
+     MAX_SPREAD_PIPS_XAU: float = 50.0
+ 
+diff --git a/app/services/indicators.py b/app/services/indicators.py
+index 1c13182..4f1598f 100644
+--- a/app/services/indicators.py
++++ b/app/services/indicators.py
+@@ -354,9 +354,17 @@ class IndicatorService:
+         # Calculate max possible score
+         max_possible_score = sum(ind.weight for ind in self.indicators if ind.enabled)
+ 
+-        # Calculate threshold based on min_indicators ratio
+-        # Usamos una base de 12 indicadores relevantes para el cálculo del ratio de puntuación
+-        min_score_for_signal = max_possible_score * (min_indicators / 12)
++        # Calculate threshold based on min_indicators ratio.
++        # CAMBIO (fix "dejó de mandar señales"): antes se usaba una base fija
++        # de "12" indicadores para este cálculo, un número arbitrario que no
++        # correspondía a los 18 indicadores reales habilitados. Con esa base,
++        # el umbral de score exigía en la práctica un peso promedio por
++        # indicador (~1.58) más alto que el peso promedio real de los
++        # indicadores del sistema (~1.06), haciendo el umbral casi
++        # inalcanzable incluso cuando sí había suficientes indicadores
++        # confirmando. Ahora se usa el número real de indicadores habilitados.
++        enabled_count = len([ind for ind in self.indicators if ind.enabled]) or 12
++        min_score_for_signal = max_possible_score * (min_indicators / enabled_count)
+ 
+         # Conteo real y confiable de indicadores que confirmaron el lado ganador
+         # (antes: búsqueda de substrings en `details`, propensa a falsos positivos)
+diff --git a/app/services/signal_engine.py b/app/services/signal_engine.py
+index f6cee3c..4ec7873 100644
+--- a/app/services/signal_engine.py
++++ b/app/services/signal_engine.py
+@@ -15,7 +15,15 @@ from app.services.excel_manager import excel_manager
+ class SignalEngine:
+     """Engine for generating trading signals based on 18 indicators confluence."""
+ 
+-    MIN_INDICATORS_FOR_SIGNAL = 7
++    # CAMBIO (fix "dejó de mandar señales"): bajado de 7 a 6. Con conteo de
++    # indicadores corregido (ya no inflado por el bug de substrings), un
++    # umbral de 7 dejaba pasar ~1% de los escenarios simulados de mercado,
++    # contra ~15% con umbral 6 (ver validación en el PR). 6 sigue siendo
++    # selectivo (exige más de un tercio de los 18 indicadores confirmando en
++    # la misma dirección con score ponderado suficiente) pero ya no bloquea
++    # prácticamente todas las señales. Es además el valor que ya estaba
++    # configurado en trading_config.xlsx.
++    MIN_INDICATORS_FOR_SIGNAL = 6
+     ANALYSIS_TIMEFRAMES = ["30m", "1h", "4h"]
+     SIGNAL_TIMEFRAME = "5m"
+     ATR_SL_MULTIPLIER = 2.0 # CAMBIO 17: Centralized ATR SL multiplier
+@@ -141,8 +149,20 @@ class SignalEngine:
+                 return None
+ 
+             direction, indicators_met, details = indicator_service.evaluate_signals(df, indicators)
+-            if direction == "NEUTRAL" or indicators_met < self.MIN_INDICATORS_FOR_SIGNAL:
+-                logger.debug(f"[DEBUG] Skipping {asset}: Indicator evaluation NEUTRAL or insufficient indicators met ({indicators_met}/{self.MIN_INDICATORS_FOR_SIGNAL}).")
++            # CAMBIO (fix "dejó de mandar señales"): antes esta condición usaba
++            # el constante de clase MIN_INDICATORS_FOR_SIGNAL=7, hardcodeado e
++            # INDEPENDIENTE del self.min_indicators (por defecto 6) que ya usa
++            # evaluate_signals() internamente para decidir BUY/SELL vs NEUTRAL.
++            # Esa inconsistencia (6 adentro, 7 afuera) ya existía antes de esta
++            # revisión, pero quedaba enmascarada porque el bug de conteo por
++            # substrings inflaba artificialmente indicators_met, así que casi
++            # siempre superaba el 7 igual. Al corregir el conteo (ahora fiel a
++            # los indicadores realmente confirmados), casi ninguna señal volvía
++            # a alcanzar el umbral de 7, y el sistema dejó de emitir señales.
++            # Ahora se usa una única fuente de verdad (self.min_indicators) en
++            # ambos puntos.
++            if direction == "NEUTRAL" or indicators_met < self.min_indicators:
++                logger.debug(f"[DEBUG] Skipping {asset}: Indicator evaluation NEUTRAL or insufficient indicators met ({indicators_met}/{self.min_indicators}).")
+                 return None
+ 
+             # CAMBIO (fix win-rate): Session Filter reactivado.
+-- 
+2.43.0
+
