@@ -140,7 +140,14 @@ class MarketDataService:
         if settings.MT4_FILES_PATH:
             try:
                 clean_symbol = asset.upper().replace("/", "").replace("\\", "")
-                history_file = os.path.join(settings.MT4_FILES_PATH, f"history_{clean_symbol}.csv")
+                # Handle index naming variations (e.g. US30Cash vs US30)
+                if "CASH" in clean_symbol:
+                    clean_symbol = clean_symbol.replace("CASH", "")
+                
+                # Try to find interval-specific file first
+                history_file = os.path.join(settings.MT4_FILES_PATH, f"history_{clean_symbol}_{interval}.csv")
+                if not os.path.exists(history_file):
+                    history_file = os.path.join(settings.MT4_FILES_PATH, f"history_{clean_symbol}.csv")
                 
                 if os.path.exists(history_file):
                     df = pd.read_csv(history_file)
@@ -150,6 +157,8 @@ class MarketDataService:
                         if col in df.columns:
                             df[col] = pd.to_numeric(df[col], errors="coerce")
                     return df
+                else:
+                    logger.debug(f"[MT5_DEBUG] MT4 history file NOT FOUND: {history_file}")
             except Exception as e:
                 logger.warning(f"Failed to read MT4 history for {asset}: {e}")
 
