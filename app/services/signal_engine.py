@@ -244,19 +244,20 @@ class SignalEngine:
                     return False
 
             # SMC Alignment Check on 30m (Intermediate structure)
-            # CAMBIO: Flexibilizamos la búsqueda de FVG a los últimos 20 velas y lo hacemos opcional si no hay datos de 30m
+            # CAMBIO: Flexibilizamos la búsqueda de FVG y lo hacemos opcional para evitar bloqueos por falta de datos
             df_30m = await market_data_service.get_time_series(asset, interval="30m", outputsize=100)
-            if df_30m is not None and not df_30m.empty:
+            if df_30m is not None and not df_30m.empty and len(df_30m) > 10:
                 fvgs = indicator_service.detect_fvg(df_30m)
-                # Look for a recent FVG (last 20 candles) in the trade direction
-                recent_fvgs = fvgs[-20:] if len(fvgs) >= 20 else fvgs
+                # Look for a recent FVG (last 30 candles) in the trade direction
+                recent_fvgs = fvgs[-30:] if len(fvgs) >= 30 else fvgs
                 has_fvg = any(f["type"] == ("BULLISH" if direction == "BUY" else "BEARISH") for f in recent_fvgs)
                 
                 if not has_fvg:
-                    logger.info(f"Signal for {asset} rejected: No {direction.lower()} FVG confirmation on 30m (last 20 candles).")
+                    logger.info(f"Signal for {asset} rejected: No {direction.lower()} FVG confirmation on 30m (last 30 candles).")
                     return False
             else:
-                logger.warning(f"Structural validation: Skipping FVG check for {asset} (No 30m data).")
+                # Si no hay datos de 30m, permitimos la señal pero con una advertencia
+                logger.warning(f"Structural validation: FVG check skipped for {asset} (Insufficient 30m data). Proceeding with caution.")
 
             return True
         except Exception as e:
