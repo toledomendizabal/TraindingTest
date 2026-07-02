@@ -1,5 +1,6 @@
 """Signal engine for technical analysis and signal generation."""
 import asyncio
+import pandas as pd
 from datetime import datetime
 from typing import List, Dict, Optional
 from loguru import logger
@@ -243,16 +244,19 @@ class SignalEngine:
                     return False
 
             # SMC Alignment Check on 30m (Intermediate structure)
+            # CAMBIO: Flexibilizamos la búsqueda de FVG a los últimos 20 velas y lo hacemos opcional si no hay datos de 30m
             df_30m = await market_data_service.get_time_series(asset, interval="30m", outputsize=100)
-            if df_30m is not None:
+            if df_30m is not None and not df_30m.empty:
                 fvgs = indicator_service.detect_fvg(df_30m)
-                # Look for a recent FVG (last 10 candles) in the trade direction
-                recent_fvgs = fvgs[-10:] if len(fvgs) >= 10 else fvgs
+                # Look for a recent FVG (last 20 candles) in the trade direction
+                recent_fvgs = fvgs[-20:] if len(fvgs) >= 20 else fvgs
                 has_fvg = any(f["type"] == ("BULLISH" if direction == "BUY" else "BEARISH") for f in recent_fvgs)
                 
                 if not has_fvg:
-                    logger.info(f"Signal for {asset} rejected: No {direction.lower()} FVG confirmation on 30m (last 10 candles).")
+                    logger.info(f"Signal for {asset} rejected: No {direction.lower()} FVG confirmation on 30m (last 20 candles).")
                     return False
+            else:
+                logger.warning(f"Structural validation: Skipping FVG check for {asset} (No 30m data).")
 
             return True
         except Exception as e:

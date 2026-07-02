@@ -58,6 +58,33 @@ void ExportRealTimePrices()
    }
 }
 
+void ExportHistoryFile(string symbol, string safe_symbol, ENUM_TIMEFRAMES period, string suffix)
+{
+   string fileName = "history_" + safe_symbol + suffix + ".csv";
+   int handle = FileOpen(fileName, FILE_CSV|FILE_WRITE|FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_COMMON|FILE_ANSI, ',');
+   
+   if(handle != INVALID_HANDLE)
+   {
+      FileWrite(handle, "datetime", "open", "high", "low", "close", "volume");
+      
+      MqlRates rates[];
+      ArraySetAsSeries(rates, true);
+      int copied = CopyRates(symbol, period, 0, HistoryBars, rates);
+      
+      for(int j=0; j<copied; j++)
+      {
+         FileWrite(handle, 
+            TimeToString(rates[j].time, TIME_DATE|TIME_SECONDS),
+            DoubleToString(rates[j].open, (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS)),
+            DoubleToString(rates[j].high, (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS)),
+            DoubleToString(rates[j].low, (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS)),
+            DoubleToString(rates[j].close, (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS)),
+            (string)rates[j].tick_volume);
+      }
+      FileClose(handle);
+   }
+}
+
 void ExportHistory()
 {
    int total = SymbolsTotal(true);
@@ -68,34 +95,12 @@ void ExportHistory()
       StringReplace(safe_symbol, "/", "");
       StringReplace(safe_symbol, "\\", "");
       
-      string fileName = "history_" + safe_symbol + ".csv";
-      
-      // Ensure data is synchronized before copying
       if(!SymbolIsSynchronized(symbol)) continue;
 
-      int handle = FileOpen(fileName, FILE_CSV|FILE_WRITE|FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_COMMON|FILE_ANSI, ',');
-      
-      if(handle != INVALID_HANDLE)
-      {
-         FileWrite(handle, "datetime", "open", "high", "low", "close", "volume");
-         
-         MqlRates rates[];
-         ArraySetAsSeries(rates, true);
-         
-         // Force PERIOD_M1 for Night-Watch retroactive verification
-         int copied = CopyRates(symbol, PERIOD_M1, 0, HistoryBars, rates);
-         
-         for(int j=0; j<copied; j++)
-         {
-            FileWrite(handle, 
-               TimeToString(rates[j].time, TIME_DATE|TIME_SECONDS),
-               DoubleToString(rates[j].open, (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS)),
-               DoubleToString(rates[j].high, (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS)),
-               DoubleToString(rates[j].low, (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS)),
-               DoubleToString(rates[j].close, (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS)),
-               (string)rates[j].tick_volume);
-         }
-         FileClose(handle);
-      }
+      // Export different timeframes for full structural validation
+      ExportHistoryFile(symbol, safe_symbol, PERIOD_M1, "");      // Default (1m/5m context)
+      ExportHistoryFile(symbol, safe_symbol, PERIOD_M30, "_30m"); // Structural 30m
+      ExportHistoryFile(symbol, safe_symbol, PERIOD_H1, "_1h");   // HTF 1h
+      ExportHistoryFile(symbol, safe_symbol, PERIOD_H4, "_4h");   // HTF 4h
    }
 }
