@@ -1,6 +1,8 @@
 """Signal data models."""
+import math
+import uuid
 from enum import Enum
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, List
 from datetime import datetime
 
@@ -22,7 +24,15 @@ class SignalStatus(str, Enum):
 
 class Signal(BaseModel):
     """Trading signal model."""
-    id: Optional[str] = None
+    # CAMBIO (defensa adicional, bug "no cierra las señales aunque sí manda
+    # mensaje"): antes `id: Optional[str] = None` permitía crear un Signal
+    # sin id en cualquier punto del código, lo que causaba fallos silenciosos
+    # al intentar localizar la fila correcta en Excel para actualizar su
+    # estado al cerrar (ver fix en signal_engine.py::_create_signal). Con
+    # default_factory, incluso si algún otro punto del código construye un
+    # Signal sin pasar id explícitamente, se genera uno único automáticamente
+    # en vez de quedar en None.
+    id: str = Field(default_factory=lambda: str(uuid.uuid4())[:8])
     asset: str
     direction: SignalDirection
     entry_price: float
@@ -69,6 +79,40 @@ class Signal(BaseModel):
         json_encoders = {
             datetime: lambda v: v.isoformat() if v else None
         }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Signal":
+        """
+        Reconstruye un Signal desde un dict plano (típicamente una fila de
+        Excel leída con pandas y convertida con `.to_dict('records')`).
+
+        CAMBIO CRÍTICO (bug encontrado en auditoría exhaustiva): este método
+        NO EXISTÍA. `SignalEngine._load_active_signals()` llamaba a
+        `Signal.from_dict(record)` en un try/except que silenciaba el
+        AttributeError resultante, dejando `active_signals` vacío cada vez
+        que el proceso arrancaba con al menos una señal en estado ACTIVE en
+        Excel. Como `position_monitor.py` depende enteramente de
+        `signal_engine.active_signals` para evaluar SL/TP y cierres
+        parciales, el efecto práctico era: cualquier posición abierta en el
+        momento de un reinicio del proceso quedaba "huérfana" -- nunca más
+        se evaluaba su SL/TP/cierre parcial automáticamente, aunque seguía
+        bloqueando ese activo para nuevas señales (vía el chequeo directo a
+        Excel en `_has_active_signal`).
+
+        Se implementa tolerando valores NaN de pandas, `pandas.Timestamp`
+        en vez de `datetime`, y columnas ausentes (usa los defaults del
+        modelo).
+        """
+        clean = {}
+        for key, value in data.items():
+            if value is None:
+                continue
+            if isinstance(value, float) and math.isnan(value):
+                continue
+            if hasattr(value, "to_pydatetime"):  # pandas.Timestamp -> datetime
+                value = value.to_pydatetime()
+            clean[key] = value
+        return cls(**clean)
 
 
 class SignalCreate(BaseModel):

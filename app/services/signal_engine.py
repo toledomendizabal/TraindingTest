@@ -1,5 +1,6 @@
 """Signal engine for technical analysis and signal generation."""
 import asyncio
+import uuid
 import pandas as pd
 from datetime import datetime
 from typing import List, Dict, Optional
@@ -339,6 +340,25 @@ class SignalEngine:
 
             # Create signal
             signal = Signal(
+                # CAMBIO CRÍTICO (bug reportado: "no cierra las señales
+                # aunque sí manda mensaje"): esta función nunca pasaba `id=`
+                # al construir el Signal, y el modelo (`id: Optional[str] =
+                # None`) no tiene un default_factory que genere uno
+                # automáticamente. Resultado: TODA señal se creaba con
+                # id=None (visible en los logs como "Signal None registered
+                # in Excel" y "CLOSING None: CLOSED_SL..."). Al intentar
+                # cerrar la posición, `update_signal_status` busca la fila
+                # con `df["id"] == str(signal_id)` (es decir, comparando
+                # contra el string "None"), pero en Excel la columna id
+                # quedaba en NaN (pandas no guarda None como el string
+                # "None"). NaN == "None" es siempre False, así que la
+                # búsqueda nunca encontraba la fila y la actualización de
+                # estado (a CLOSED_SL/CLOSED_TP1/TP2/TP3/BE) nunca se
+                # aplicaba -- el registro quedaba como ACTIVE para siempre en
+                # la planilla, aunque el log y la notificación de Telegram sí
+                # se dispararan correctamente (esos no dependen de encontrar
+                # la fila en Excel).
+                id=str(uuid.uuid4())[:8],
                 asset=asset,
                 direction=SignalDirection(direction),
                 entry_price=float(current_price),
