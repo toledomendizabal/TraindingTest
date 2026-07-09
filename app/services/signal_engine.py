@@ -169,8 +169,47 @@ class SignalEngine:
                 logger.debug(f"[DEBUG] Skipping {asset}: Structural validation failed.")
                 return None
 
+            # CAMBIO (análisis de win rate, datos reales 2026-07-07): nuevo
+            # filtro de tendencia macro (diario). Motivación: 206 de 207
+            # señales del día analizado fueron SELL (206:1), incluyendo
+            # USDJPY/USDCAD/USDCHF -- pares donde el USD es la divisa BASE.
+            # Ese mismo día, según noticias reales, el dólar estaba en
+            # fortalecimiento generalizado (demanda de refugio, USDJPY cerca
+            # de máximos de 40 años). Para esos 3 pares, una señal SELL
+            # apostaba contra la tendencia diaria real -- y fueron
+            # exactamente los 3 peores activos (USDJPY el peor de todos, en
+            # las 3 sesiones sin excepción). `_validate_structural` ya revisa
+            # 30m/1h/4h, pero con fallback PERMISIVO si los datos no se
+            # pueden obtener (deja pasar la señal). Este filtro añade una
+            # capa diaria adicional y, a diferencia de la anterior, FALLA
+            # CERRADO: si no se puede obtener el dato diario, se rechaza la
+            # señal en vez de dejarla pasar -- dado que ya vimos errores
+            # intermitentes de API/MT4 justo para varios de estos activos.
+            macro_confirmed = await self._validate_macro_trend(asset, direction)
+            if not macro_confirmed:
+                logger.info(f"Signal for {asset} rejected: Failed macro (daily) trend validation.")
+                return None
+
+            # CAMBIO (análisis de win rate, datos reales 2026-07-07):
+            # liquidity_sweep mostró una diferencia real de win rate (45.6%
+            # con liquidity_sweep=True vs 36.0% sin él, sobre 207 señales) --
+            # a diferencia de fvg_confluence, que antes de corregirse su bug
+            # (ver commit c318ec4) era siempre True y no discriminaba nada.
+            # Para aprovechar esa señal real sin bloquear señales ya fuertes,
+            # se exige fvg_confluence o liquidity_sweep SOLO como
+            # confirmación adicional en señales "límite" (indicators_met
+            # exactamente igual al mínimo configurado) -- las señales con
+            # más indicadores confirmando no se ven afectadas.
+            smc_info = self._assess_smc_confluence(direction, float(df["close"].iloc[-1]), df)
+            if indicators_met == self.min_indicators and not (smc_info["fvg_confluence"] or smc_info["liquidity_sweep"]):
+                logger.info(
+                    f"[REJECT] {asset}: señal límite ({indicators_met}/{self.min_indicators}) "
+                    f"sin confluencia SMC (ni FVG ni barrido de liquidez)."
+                )
+                return None
+
             # If all checks pass, create the signal
-            signal = self._create_signal(asset, direction, df, indicators_met)
+            signal = self._create_signal(asset, direction, df, indicators_met, smc_info=smc_info)
             if signal:
                 self.active_signals[signal.id] = signal
                 await excel_manager.register_signal(signal)
@@ -236,8 +275,23 @@ class SignalEngine:
             fvgs = indicator_service.detect_fvg(df)
             liquidity = indicator_service.detect_liquidity(df)
 
+            # CAMBIO CRÍTICO (encontrado al analizar signals_tracking.xlsx:
+            # fvg_confluence=True en el 100% de 207 señales reales, sin
+            # excepción -- un campo que siempre es True no aporta ninguna
+            # información). Causa: `detect_fvg(df)` sobre una ventana de ~200
+            # velas típicamente devuelve ~20 FVGs que en conjunto cubren casi
+            # todo el rango de precio recorrido. Buscar "¿el precio actual
+            # cae dentro de ALGUNO de estos FVGs, sin importar cuán viejo
+            # sea?" hace que casi cualquier precio coincida con algo por pura
+            # coincidencia estadística. Se filtra por recencia REAL (índice
+            # de vela dentro del df), no por posición en la lista devuelta:
+            # si hubo pocos FVGs en total, "últimos 30 de la lista" podría
+            # seguir incluyendo uno muy viejo en tiempo de velas.
+            lookback_start = max(0, len(df) - 30)
+            recent_fvgs = [f for f in fvgs if f["index"] >= lookback_start]
+
             if direction == "BUY":
-                for fvg in fvgs:
+                for fvg in recent_fvgs:
                     if fvg["type"] == "BULLISH" and fvg["bottom"] <= entry_price <= fvg["top"] * 1.001:
                         fvg_confluence = True
                         break
@@ -249,7 +303,7 @@ class SignalEngine:
                         liquidity_sweep = True
                         break
             else:  # SELL
-                for fvg in fvgs:
+                for fvg in recent_fvgs:
                     if fvg["type"] == "BEARISH" and fvg["bottom"] * 0.999 <= entry_price <= fvg["top"]:
                         fvg_confluence = True
                         break
@@ -275,7 +329,7 @@ class SignalEngine:
             "smc_quality": round(smc_quality, 2)
         }
 
-    def _create_signal(self, asset: str, direction: str, df: pd.DataFrame, indicators_met: int) -> Optional[Signal]:
+    def _create_signal(self, asset: str, direction: str, df: pd.DataFrame, indicators_met: int, smc_info: Optional[dict] = None) -> Optional[Signal]:
         """Create a new signal object with risk management parameters."""
         try:
             current_price = df["close"].iloc[-1]
@@ -335,30 +389,35 @@ class SignalEngine:
             lot_size = risk_amount / (sl_distance * contract_size)
             lot_size = round(max(0.01, lot_size), 2)
 
-            # Evaluación de confluencia SMC (restaurado a pedido del usuario)
-            smc_info = self._assess_smc_confluence(direction, float(current_price), df)
+            # Evaluación de confluencia SMC (restaurado a pedido del usuario;
+            # reutiliza el resultado ya calculado en analyze_asset si está
+            # disponible, para no recalcular detect_fvg/detect_liquidity)
+            if smc_info is None:
+                smc_info = self._assess_smc_confluence(direction, float(current_price), df)
 
             # Create signal
             signal = Signal(
-                # CAMBIO CRÍTICO (bug reportado: "no cierra las señales
-                # aunque sí manda mensaje"): esta función nunca pasaba `id=`
-                # al construir el Signal, y el modelo (`id: Optional[str] =
-                # None`) no tiene un default_factory que genere uno
-                # automáticamente. Resultado: TODA señal se creaba con
-                # id=None (visible en los logs como "Signal None registered
-                # in Excel" y "CLOSING None: CLOSED_SL..."). Al intentar
-                # cerrar la posición, `update_signal_status` busca la fila
-                # con `df["id"] == str(signal_id)` (es decir, comparando
-                # contra el string "None"), pero en Excel la columna id
-                # quedaba en NaN (pandas no guarda None como el string
-                # "None"). NaN == "None" es siempre False, así que la
-                # búsqueda nunca encontraba la fila y la actualización de
-                # estado (a CLOSED_SL/CLOSED_TP1/TP2/TP3/BE) nunca se
-                # aplicaba -- el registro quedaba como ACTIVE para siempre en
-                # la planilla, aunque el log y la notificación de Telegram sí
-                # se dispararan correctamente (esos no dependen de encontrar
-                # la fila en Excel).
+                # CAMBIO CRÍTICO #1 (bug reportado: "no cierra las señales
+                # aunque sí manda mensaje"): esta función no pasaba `id=` al
+                # construir el Signal. El modelo (`id: Optional[str] = None`
+                # sin default_factory) dejaba TODA señal con id=None. Al
+                # cerrar, `update_signal_status` busca la fila con
+                # `df["id"] == str(signal_id)` (comparando contra el string
+                # "None"), pero en Excel la columna quedaba en NaN -> nunca
+                # coincide -> la señal queda ACTIVE para siempre en Excel
+                # aunque el log/Telegram sí indiquen el cierre.
                 id=str(uuid.uuid4())[:8],
+                # CAMBIO CRÍTICO #2 (encontrado al analizar
+                # signals_tracking.xlsx: columna created_at 100% vacía en las
+                # 207 filas reales): mismo patrón de bug. Sin created_at:
+                #  1. Excel: created_at/duration_minutes siempre vacíos.
+                #  2. position_monitor.verify_retroactive_signals() compara
+                #     `df["datetime"] > signal.created_at`; con None esto
+                #     lanza TypeError (capturado por el try/except), así que
+                #     la verificación retroactiva (recuperar SL/TP tocados
+                #     mientras el servidor estuvo caído) fallaba
+                #     silenciosamente para TODA señal, todo el tiempo.
+                created_at=datetime.now(),
                 asset=asset,
                 direction=SignalDirection(direction),
                 entry_price=float(current_price),
@@ -456,6 +515,36 @@ class SignalEngine:
             return True
         except Exception as e:
             logger.error(f"Error en validación estructural: {e}")
+            return False
+
+    async def _validate_macro_trend(self, asset: str, direction: str) -> bool:
+        """
+        Confirma la dirección de la señal contra la tendencia diaria
+        (EMA50 en velas 1d). A diferencia de `_validate_structural`, este
+        filtro FALLA CERRADO: si no se pueden obtener suficientes datos
+        diarios, la señal se RECHAZA en vez de dejarse pasar.
+
+        Motivación (ver comentario en analyze_asset): un día con 206/207
+        señales SELL, incluyendo pares USD-base durante una tendencia real de
+        fortalecimiento del dólar. Esta capa adicional exige que la
+        dirección de la señal coincida con la tendencia diaria antes de
+        aceptarla, para evitar operar en contra de un movimiento macro claro.
+        """
+        try:
+            df_daily = await market_data_service.get_time_series(asset, interval="1d", outputsize=60)
+            if df_daily is None or df_daily.empty or len(df_daily) < 20:
+                logger.warning(f"Macro trend validation: insufficient daily data for {asset}. Rejecting (fail-closed).")
+                return False
+
+            ema50_daily = df_daily["close"].ewm(span=50, adjust=False).mean().iloc[-1]
+            current_price = df_daily["close"].iloc[-1]
+
+            if direction == "BUY":
+                return current_price > ema50_daily
+            else:  # SELL
+                return current_price < ema50_daily
+        except Exception as e:
+            logger.error(f"Error en validación de tendencia macro para {asset}: {e}")
             return False
 
     def _has_active_signal(self, asset: str) -> bool:

@@ -48,7 +48,17 @@ class Settings(BaseSettings):
     # FVG) multiplicaba la restricción hasta casi cero señales. Se amplía a
     # 06:00-21:00 UTC (15h), que sigue excluyendo la franja de menor liquidez
     # (21:00-06:00 UTC) pero da más margen. Ajustable según tus activos.
-    SESSION_START_HOUR_UTC: int = 6   # Antes de apertura de Londres
+    # CAMBIO (análisis de win rate, datos reales 2026-07-07): la sesión
+    # "Tokyo" (ver market_data_service.get_current_session) está definida
+    # como horas 0-7 UTC. El valor anterior (SESSION_START_HOUR_UTC=6)
+    # dejaba pasar 2 horas de sesión Tokyo hacia el motor de señales. Los
+    # datos reales mostraron que Tokyo es, con diferencia, la peor sesión:
+    # 26.3% WR y -$414 de P/L, mala de forma UNIFORME en los 7 activos
+    # operados (20-40% WR en cada uno individualmente, no concentrado en un
+    # solo par). Se sube el inicio a las 8:00 UTC, justo cuando
+    # get_current_session() empieza a clasificar como "London", para
+    # excluir por completo la sesión Tokyo del motor de señales.
+    SESSION_START_HOUR_UTC: int = 8   # Inicio de la sesión de Londres (excluye Tokyo por completo)
     SESSION_END_HOUR_UTC: int = 21    # Cierre de Nueva York
 
     # Minimum Stop Loss distances (in pips) per asset class.
@@ -83,8 +93,17 @@ class Settings(BaseSettings):
     TP3_CLOSE_PCT: float = 25.0
 
     # Active Assets
+    # CAMBIO (análisis de win rate, datos reales 2026-07-07): USDJPY excluido
+    # temporalmente. Fue el peor activo en las 3 sesiones sin excepción
+    # (25% WR Londres, 10% NY, 20% Tokyo, sobre 27 señales), con evidencia de
+    # que el sistema generó señales SELL contra una tendencia real de
+    # fortalecimiento del USD (contexto: demanda de refugio por conflicto en
+    # Medio Oriente, USDJPY cerca de máximos de 40 años esa semana). Ver
+    # también el nuevo filtro de tendencia macro (_validate_macro_trend) que
+    # apunta a la causa de fondo; si ese filtro demuestra ser efectivo en
+    # producción, USDJPY puede reincorporarse.
     ACTIVE_ASSETS: List[str] = [
-        "EURUSD", "GBPUSD", "USDJPY", "USDCHF",
+        "EURUSD", "GBPUSD", "USDCHF",
         "USDCAD", "NZDUSD", "AUDUSD", "XAUUSD",
         "US30Cash", "US100Cash", "US500Cash", "GER40Cash"
     ]
