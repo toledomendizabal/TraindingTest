@@ -1,0 +1,640 @@
+From 69c968c19862bce0a6544affd7c1222e2b508a1b Mon Sep 17 00:00:00 2001
+From: Test <test@test.com>
+Date: Fri, 10 Jul 2026 03:34:02 +0000
+Subject: [PATCH] feat: ejecucion en vivo en MetaTrader 5 (aplicado limpio
+ sobre main actual)
+
+Integracion MT5 (apertura, cierre parcial, breakeven, cierre final)
+aplicada directamente sobre el main real y actual del usuario, sin
+tocar los cambios de los ultimos 3 commits independientes (config.py,
+signal_engine.py, signal.py, tests/run_tests.py).
+
+Ver detalle completo en el commit c0e779b de la rama anterior
+(fix/signal-frequency-followup) -- mismo contenido, aplicado limpio.
+---
+ .env.example                     |  55 ++++++
+ app/api/config_api.py            |   8 +
+ app/core/config.py               |  26 +++
+ app/models/signal.py             |   4 +
+ app/services/excel_manager.py    |   6 +-
+ app/services/mt5_executor.py     | 313 +++++++++++++++++++++++++++++++
+ app/services/position_monitor.py |  43 +++++
+ app/services/signal_engine.py    |  20 ++
+ requirements.txt                 |   7 +
+ 9 files changed, 480 insertions(+), 2 deletions(-)
+ create mode 100644 .env.example
+ create mode 100644 app/services/mt5_executor.py
+
+diff --git a/.env.example b/.env.example
+new file mode 100644
+index 0000000..aaa755c
+--- /dev/null
++++ b/.env.example
+@@ -0,0 +1,55 @@
++# ============================================================
++# TradingSignal Pro - Variables de entorno
++# Copia este archivo como ".env" y completa tus valores reales.
++# NUNCA subas el archivo ".env" real a Git (ya está en .gitignore).
++# ============================================================
++
++# --- MetaTrader 5: ejecución en vivo (órdenes reales) ---
++#
++# IMPORTANTE: el paquete MetaTrader5 se conecta a una terminal MT5 LOCAL
++# vía IPC (no es una API remota). La terminal MT5 debe estar instalada y
++# ABIERTA en la misma máquina donde corre este backend (normalmente
++# Windows; en Linux/Mac necesitas Wine o un servidor Windows dedicado).
++#
++# MT5_LIVE_TRADING_ENABLED es un interruptor de seguridad EXPLÍCITO.
++# Por defecto (si no defines esta variable) el sistema NO opera en vivo,
++# solo genera señales como hasta ahora. Ponlo en "true" únicamente
++# cuando estés listo para enviar órdenes reales al bróker.
++#
++# Recomendación: prueba primero con las credenciales de una cuenta DEMO
++# de tu bróker durante varios días antes de usar una cuenta real.
++MT5_LIVE_TRADING_ENABLED=false
++
++# Credenciales de tu cuenta MT5 (demo o real). El número de cuenta
++# (login) es el que te da tu bróker, junto con la contraseña y el
++# nombre del servidor (ej. "ICMarketsSC-Demo", "Deriv-Server", etc.
++# Lo ves en MT5: Herramientas > Opciones > Servidor, o en el correo de
++# bienvenida de tu bróker).
++MT5_LOGIN=12345678
++MT5_PASSWORD=tu_password_de_mt5_aqui
++MT5_SERVER=NombreDelServidor-Demo
++
++# Ruta al ejecutable terminal64.exe. Déjalo vacío si solo tienes una
++# instalación de MT5 (la detecta automáticamente). Solo complétalo si
++# tienes varias terminales instaladas o una instalación portable.
++# Ejemplo Windows: C:\Program Files\MetaTrader 5\terminal64.exe
++MT5_TERMINAL_PATH=
++
++# Número "mágico" para identificar las órdenes de este sistema entre
++# tus demás operaciones en la misma cuenta (útil si también operas
++# manualmente). Cualquier número entero sirve, solo debe ser único.
++MT5_MAGIC_NUMBER=202607
++
++# Desviación máxima de precio permitida (en puntos del bróker) al
++# enviar una orden a mercado, antes de rechazarla por slippage.
++MT5_DEVIATION_POINTS=20
++
++
++# ============================================================
++# Variables ya existentes (referencia)
++# ============================================================
++
++# Ruta donde el Expert Advisor de MT4/MT5 exporta los archivos de
++# precios/historial (PriceExporter.mq4/mq5). Ejemplo:
++# C:\Users\TuUsuario\AppData\Roaming\MetaQuotes\Terminal\<ID>\MQL5\Files
++MT4_FILES_PATH=
+diff --git a/app/api/config_api.py b/app/api/config_api.py
+index 0229ba9..a99fb31 100644
+--- a/app/api/config_api.py
++++ b/app/api/config_api.py
+@@ -53,6 +53,14 @@ async def update_config(config: ConfigUpdate):
+                 if "risk_percentage" in config.parameters:
+                     settings.RISK_PERCENTAGE = float(config.parameters["risk_percentage"])
+ 
++            # CAMBIO: forzar recarga inmediata en signal_engine (min_indicators,
++            # signal_timeframe) para que los cambios de config apliquen sin
++            # tener que reiniciar el proceso. Antes esto solo se leía una vez
++            # al arrancar, así que los cambios vía dashboard/API quedaban sin
++            # efecto hasta un reinicio manual.
++            from app.services.signal_engine import signal_engine
++            signal_engine.reload_config()
++
+             return {"status": "success", "message": "Configuration updated"}
+         else:
+             raise HTTPException(status_code=500, detail="Failed to update configuration")
+diff --git a/app/core/config.py b/app/core/config.py
+index 659fa1e..b1f0ff9 100644
+--- a/app/core/config.py
++++ b/app/core/config.py
+@@ -38,6 +38,32 @@ class Settings(BaseSettings):
+     MT4_FILES_PATH: str = os.getenv("MT4_FILES_PATH", "")
+     MT4_SYNC_ENABLED: bool = True
+ 
++    # --- MetaTrader 5: ejecución en vivo (órdenes reales) ---
++    # IMPORTANTE: el paquete oficial `MetaTrader5` de Python se conecta a
++    # una instancia LOCAL de la terminal MT5 vía IPC -- no es una API
++    # remota. Esto requiere que la terminal MT5 esté instalada y abierta en
++    # la MISMA máquina donde corre este backend (normalmente Windows; en
++    # Linux/Mac se necesita correr MT5 bajo Wine o en una VM/servidor
++    # Windows dedicado).
++    #
++    # MT5_LIVE_TRADING_ENABLED es un interruptor de seguridad explícito:
++    # por defecto es False (el sistema solo genera señales, sin tocar el
++    # bróker). Debe activarse a propósito en .env, e idealmente probarse
++    # primero contra una cuenta DEMO antes de usar una cuenta real.
++    MT5_LIVE_TRADING_ENABLED: bool = os.getenv("MT5_LIVE_TRADING_ENABLED", "false").lower() == "true"
++    MT5_LOGIN: str = os.getenv("MT5_LOGIN", "")
++    MT5_PASSWORD: str = os.getenv("MT5_PASSWORD", "")
++    MT5_SERVER: str = os.getenv("MT5_SERVER", "")
++    # Ruta al ejecutable terminal64.exe. Opcional: si se deja vacío, se usa
++    # la terminal MT5 ya instalada por defecto en el sistema.
++    MT5_TERMINAL_PATH: str = os.getenv("MT5_TERMINAL_PATH", "")
++    # Número "mágico" para identificar las órdenes de este sistema entre
++    # las demás operaciones de la cuenta.
++    MT5_MAGIC_NUMBER: int = int(os.getenv("MT5_MAGIC_NUMBER", "202607"))
++    # Desviación máxima de precio permitida (en puntos del bróker) al
++    # enviar una orden a mercado, antes de que se rechace por slippage.
++    MT5_DEVIATION_POINTS: int = int(os.getenv("MT5_DEVIATION_POINTS", "20"))
++
+     # --- Risk / Win-Rate Tuning (CAMBIO: revisión de causas del 25% win rate) ---
+     # Session Filter: restrict trading to higher-liquidity hours (UTC).
+     # Operar 24h (incluyendo sesión asiática de baja liquidez) degrada el ratio señal/ruido.
+diff --git a/app/models/signal.py b/app/models/signal.py
+index 85f4517..82ef992 100644
+--- a/app/models/signal.py
++++ b/app/models/signal.py
+@@ -74,6 +74,10 @@ class Signal(BaseModel):
+     tp2_hit: bool = False
+     breakeven_active: bool = False      # True si el SL ya fue movido a entry_price (o mejor)
+     realized_partial_pnl: float = 0.0   # P/L ya materializado por cierres parciales (TP1/TP2)
++    # Ticket de la posición en MetaTrader 5, si la ejecución en vivo está
++    # habilitada (MT5_LIVE_TRADING_ENABLED=true). None si la señal es
++    # solo informativa (no se envió orden real al bróker).
++    mt5_ticket: Optional[int] = None
+ 
+     class Config:
+         json_encoders = {
+diff --git a/app/services/excel_manager.py b/app/services/excel_manager.py
+index 11f48e4..ec12164 100644
+--- a/app/services/excel_manager.py
++++ b/app/services/excel_manager.py
+@@ -88,7 +88,8 @@ class ExcelManager:
+             "smc_quality", "fvg_confluence", "liquidity_sweep",
+             # CAMBIO (fix win-rate): columnas para cierre parcial escalonado
+             "initial_lot_size", "remaining_lot_size",
+-            "tp1_hit", "tp2_hit", "breakeven_active", "realized_partial_pnl"
++            "tp1_hit", "tp2_hit", "breakeven_active", "realized_partial_pnl",
++            "mt5_ticket"
+         ]
+         df = pd.DataFrame(columns=columns)
+         df.to_excel(self.signals_file, index=False, sheet_name="Signals")
+@@ -181,7 +182,8 @@ class ExcelManager:
+                 "tp1_hit": getattr(signal, "tp1_hit", False),
+                 "tp2_hit": getattr(signal, "tp2_hit", False),
+                 "breakeven_active": getattr(signal, "breakeven_active", False),
+-                "realized_partial_pnl": getattr(signal, "realized_partial_pnl", 0.0)
++                "realized_partial_pnl": getattr(signal, "realized_partial_pnl", 0.0),
++                "mt5_ticket": getattr(signal, "mt5_ticket", None)
+             }
+ 
+             df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+diff --git a/app/services/mt5_executor.py b/app/services/mt5_executor.py
+new file mode 100644
+index 0000000..9766d6b
+--- /dev/null
++++ b/app/services/mt5_executor.py
+@@ -0,0 +1,313 @@
++"""
++Servicio de ejecución en vivo contra un terminal MetaTrader 5 local.
++
++======================================================================
++ADVERTENCIA IMPORTANTE -- ESTE MÓDULO ENVÍA ÓRDENES REALES A MERCADO
++======================================================================
++Si `settings.MT5_LIVE_TRADING_ENABLED` es True y las credenciales en
++.env corresponden a una cuenta REAL (no demo), las funciones de este
++archivo abren, modifican y cierran posiciones con dinero real, sin
++confirmación manual adicional.
++
++Recomendaciones antes de habilitarlo:
++1. Prueba primero contra una cuenta DEMO (mismo flujo, mismo código,
++   servidor demo del bróker) durante al menos varios días.
++2. Revisa que `lot_size`, `stop_loss` y `take_profit_*` en las señales
++   generadas sean razonables para el tamaño real de tu cuenta -- el
++   position sizing en signal_engine.py usa settings.INITIAL_CAPITAL /
++   RISK_PERCENTAGE, que debes ajustar a tu capital REAL antes de
++   operar en vivo (si esos valores no coinciden con tu cuenta real, el
++   riesgo por operación calculado será incorrecto).
++3. Verifica el símbolo exacto que usa tu bróker para cada activo (
++   algunos brokers agregan sufijos como "EURUSD.pro" o "EURUSDm"). Este
++   servicio intenta resolverlo automáticamente (`_resolve_symbol`),
++   pero conviene confirmarlo manualmente la primera vez.
++
++======================================================================
++REQUISITO DE PLATAFORMA
++======================================================================
++El paquete oficial `MetaTrader5` de Python se conecta a una instancia
++LOCAL de la terminal MT5 vía IPC -- no es una API remota / basada en
++red. Esto requiere que la terminal MT5 esté instalada y abierta en la
++MISMA máquina donde corre este backend. En la práctica, esto significa
++Windows (el paquete no funciona de forma nativa en Linux/Mac; para
++esos sistemas se necesita correr MT5 bajo Wine o usar un servidor/VM
++Windows dedicado donde sí corra este backend).
++"""
++from typing import Optional
++from loguru import logger
++
++from app.core.config import settings
++from app.models.signal import Signal, SignalDirection
++
++try:
++    import MetaTrader5 as mt5
++    MT5_AVAILABLE = True
++except ImportError:
++    # El paquete `MetaTrader5` no está instalado o no es compatible con
++    # este sistema operativo (ej. Linux). El servicio queda deshabilitado
++    # de forma segura -- todas las llamadas devuelven None/False sin
++    # lanzar excepciones, para no romper el resto del sistema (que sigue
++    # funcionando en modo "solo señales").
++    mt5 = None
++    MT5_AVAILABLE = False
++
++
++class MT5ExecutorService:
++    """Ejecuta señales como órdenes reales en MetaTrader 5."""
++
++    def __init__(self):
++        self._connected = False
++        self._magic = settings.MT5_MAGIC_NUMBER
++
++    # ------------------------------------------------------------------
++    # Conexión
++    # ------------------------------------------------------------------
++    def connect(self) -> bool:
++        """Inicializa la terminal MT5 y hace login con las credenciales de .env."""
++        if not settings.MT5_LIVE_TRADING_ENABLED:
++            logger.info("MT5 live trading deshabilitado (MT5_LIVE_TRADING_ENABLED=false). No se conecta.")
++            return False
++
++        if not MT5_AVAILABLE:
++            logger.error(
++                "El paquete 'MetaTrader5' no está disponible en este sistema "
++                "(¿estás en Linux/Mac sin Wine? ¿falta 'pip install MetaTrader5'?). "
++                "La ejecución en vivo queda deshabilitada; el sistema sigue "
++                "generando señales normalmente."
++            )
++            return False
++
++        if not all([settings.MT5_LOGIN, settings.MT5_PASSWORD, settings.MT5_SERVER]):
++            logger.error(
++                "Faltan credenciales de MT5 en .env. Revisa MT5_LOGIN, "
++                "MT5_PASSWORD y MT5_SERVER."
++            )
++            return False
++
++        init_kwargs = {}
++        if settings.MT5_TERMINAL_PATH:
++            init_kwargs["path"] = settings.MT5_TERMINAL_PATH
++
++        if not mt5.initialize(**init_kwargs):
++            logger.error(f"mt5.initialize() falló: {mt5.last_error()}")
++            return False
++
++        try:
++            login_int = int(settings.MT5_LOGIN)
++        except ValueError:
++            logger.error(f"MT5_LOGIN debe ser numérico, se recibió: {settings.MT5_LOGIN!r}")
++            mt5.shutdown()
++            return False
++
++        authorized = mt5.login(
++            login=login_int,
++            password=settings.MT5_PASSWORD,
++            server=settings.MT5_SERVER,
++        )
++        if not authorized:
++            logger.error(f"mt5.login() falló para cuenta {login_int} en {settings.MT5_SERVER}: {mt5.last_error()}")
++            mt5.shutdown()
++            return False
++
++        self._connected = True
++        account_info = mt5.account_info()
++        if account_info is not None:
++            logger.info(
++                f"MT5 conectado: cuenta {account_info.login} en {settings.MT5_SERVER} "
++                f"(balance ${account_info.balance:.2f}, apalancamiento 1:{account_info.leverage})"
++            )
++        return True
++
++    def disconnect(self):
++        """Cierra la conexión con la terminal MT5."""
++        if self._connected and MT5_AVAILABLE:
++            mt5.shutdown()
++            self._connected = False
++            logger.info("MT5 desconectado.")
++
++    def _ensure_connected(self) -> bool:
++        if not self._connected:
++            return self.connect()
++        return True
++
++    # ------------------------------------------------------------------
++    # Resolución de símbolo
++    # ------------------------------------------------------------------
++    def _resolve_symbol(self, asset: str) -> Optional[str]:
++        """
++        Resuelve el símbolo real usado por el bróker. Algunos brokers
++        agregan sufijos (ej. 'EURUSD.pro', 'EURUSDm', 'XAUUSDc'). Se busca
++        primero el símbolo exacto tal como está en `asset`, y si no existe,
++        se busca uno que empiece igual entre todos los símbolos disponibles.
++        """
++        info = mt5.symbol_info(asset)
++        if info is not None:
++            if not info.visible:
++                mt5.symbol_select(asset, True)
++            return asset
++
++        all_symbols = mt5.symbols_get()
++        for s in all_symbols or []:
++            if s.name.upper().startswith(asset.upper()):
++                mt5.symbol_select(s.name, True)
++                logger.info(f"MT5: símbolo '{asset}' resuelto como '{s.name}' (sufijo del bróker)")
++                return s.name
++
++        logger.error(f"MT5: no se encontró ningún símbolo que coincida con '{asset}' en este bróker.")
++        return None
++
++    def _find_position(self, ticket: int):
++        positions = mt5.positions_get(ticket=ticket)
++        if not positions:
++            return None
++        return positions[0]
++
++    # ------------------------------------------------------------------
++    # Apertura de posición
++    # ------------------------------------------------------------------
++    def open_position(self, signal: Signal) -> Optional[int]:
++        """
++        Abre una posición de mercado replicando la señal generada.
++
++        SL se coloca en `signal.stop_loss`. TP se coloca en
++        `signal.take_profit_3` (el nivel final) -- los cierres parciales en
++        TP1/TP2 los ejecuta este mismo servicio cuando position_monitor
++        detecta que se tocaron (ver `close_partial`), no el bróker
++        directamente, para mantener el mismo comportamiento de cierre
++        escalonado ya implementado internamente.
++
++        Retorna el ticket de la posición si se ejecutó correctamente, o
++        None si falló, si MT5_LIVE_TRADING_ENABLED es False, o si el
++        paquete MetaTrader5 no está disponible en este sistema.
++        """
++        if not settings.MT5_LIVE_TRADING_ENABLED:
++            return None
++        if not self._ensure_connected():
++            return None
++
++        symbol = self._resolve_symbol(signal.asset)
++        if symbol is None:
++            return None
++
++        order_type = mt5.ORDER_TYPE_BUY if signal.direction == SignalDirection.BUY else mt5.ORDER_TYPE_SELL
++
++        tick = mt5.symbol_info_tick(symbol)
++        if tick is None:
++            logger.error(f"MT5: no se pudo obtener el precio actual de {symbol}.")
++            return None
++        price = tick.ask if signal.direction == SignalDirection.BUY else tick.bid
++
++        request = {
++            "action": mt5.TRADE_ACTION_DEAL,
++            "symbol": symbol,
++            "volume": signal.lot_size,
++            "type": order_type,
++            "price": price,
++            "sl": signal.stop_loss,
++            "tp": signal.take_profit_3,
++            "deviation": settings.MT5_DEVIATION_POINTS,
++            "magic": self._magic,
++            "comment": f"TSPro-{signal.id}"[:31],  # MT5 limita el comentario a 31 caracteres
++            "type_time": mt5.ORDER_TIME_GTC,
++            "type_filling": mt5.ORDER_FILLING_IOC,
++        }
++
++        result = mt5.order_send(request)
++        if result is None:
++            logger.error(f"MT5: order_send devolvió None para {signal.asset}: {mt5.last_error()}")
++            return None
++        if result.retcode != mt5.TRADE_RETCODE_DONE:
++            logger.error(
++                f"MT5: orden rechazada para {signal.asset} "
++                f"(retcode={result.retcode}, {result.comment})"
++            )
++            return None
++
++        logger.info(
++            f"MT5: posición ABIERTA {signal.asset} {signal.direction.value} "
++            f"ticket={result.order} lote={signal.lot_size} @ {price}"
++        )
++        return result.order
++
++    # ------------------------------------------------------------------
++    # Cierre parcial (TP1 / TP2)
++    # ------------------------------------------------------------------
++    def close_partial(self, ticket: int, asset: str, direction: str, volume: float) -> bool:
++        """Cierra parcialmente una posición abierta (usado en TP1/TP2)."""
++        if not settings.MT5_LIVE_TRADING_ENABLED or not self._ensure_connected():
++            return False
++
++        symbol = self._resolve_symbol(asset)
++        if symbol is None:
++            return False
++
++        position = self._find_position(ticket)
++        if position is None:
++            logger.error(f"MT5: no se encontró la posición {ticket} para cierre parcial.")
++            return False
++
++        close_type = mt5.ORDER_TYPE_SELL if direction == "BUY" else mt5.ORDER_TYPE_BUY
++        tick = mt5.symbol_info_tick(symbol)
++        if tick is None:
++            logger.error(f"MT5: no se pudo obtener el precio actual de {symbol}.")
++            return False
++        price = tick.bid if direction == "BUY" else tick.ask
++
++        request = {
++            "action": mt5.TRADE_ACTION_DEAL,
++            "symbol": symbol,
++            "volume": round(min(volume, position.volume), 2),
++            "type": close_type,
++            "position": ticket,
++            "price": price,
++            "deviation": settings.MT5_DEVIATION_POINTS,
++            "magic": self._magic,
++            "comment": "TSPro-partial",
++            "type_time": mt5.ORDER_TIME_GTC,
++            "type_filling": mt5.ORDER_FILLING_IOC,
++        }
++        result = mt5.order_send(request)
++        if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
++            logger.error(f"MT5: cierre parcial falló para ticket {ticket}: {result}")
++            return False
++
++        logger.info(f"MT5: cierre parcial ejecutado, ticket={ticket}, volumen={volume}")
++        return True
++
++    # ------------------------------------------------------------------
++    # Cierre total (SL / TP3 / breakeven)
++    # ------------------------------------------------------------------
++    def close_full(self, ticket: int, asset: str, direction: str, volume: float) -> bool:
++        """Cierra por completo el remanente de una posición (SL, TP3, o breakeven)."""
++        return self.close_partial(ticket, asset, direction, volume)
++
++    # ------------------------------------------------------------------
++    # Modificar Stop Loss (breakeven tras TP1, subir a TP1 tras TP2)
++    # ------------------------------------------------------------------
++    def modify_sl(self, ticket: int, new_sl: float) -> bool:
++        """Modifica el Stop Loss de una posición abierta."""
++        if not settings.MT5_LIVE_TRADING_ENABLED or not self._ensure_connected():
++            return False
++
++        position = self._find_position(ticket)
++        if position is None:
++            logger.error(f"MT5: no se encontró la posición {ticket} para modificar SL.")
++            return False
++
++        request = {
++            "action": mt5.TRADE_ACTION_SLTP,
++            "position": ticket,
++            "sl": new_sl,
++            "tp": position.tp,
++        }
++        result = mt5.order_send(request)
++        if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
++            logger.error(f"MT5: modificar SL falló para ticket {ticket}: {result}")
++            return False
++
++        logger.info(f"MT5: SL modificado a {new_sl} para ticket {ticket}")
++        return True
++
++
++mt5_executor = MT5ExecutorService()
+diff --git a/app/services/position_monitor.py b/app/services/position_monitor.py
+index 4fc0cc8..b7e7da3 100644
+--- a/app/services/position_monitor.py
++++ b/app/services/position_monitor.py
+@@ -9,6 +9,7 @@ from app.models.signal import SignalStatus, SignalDirection
+ from app.models.asset import Asset, ASSET_CATALOG
+ from app.services.market_data import market_data_service
+ from app.services.excel_manager import excel_manager
++from app.services.mt5_executor import mt5_executor
+ 
+ 
+ class PositionMonitor:
+@@ -238,6 +239,21 @@ class PositionMonitor:
+                 if signal.tp1_hit:
+                     final_status = SignalStatus.CLOSED_BE
+ 
++                # CAMBIO: cierre real en MT5 si esta señal tiene una posición
++                # abierta en vivo (signal.mt5_ticket). Si falla, se registra
++                # el error pero el tracking interno (Excel) continúa igual
++                # -- ante una discrepancia entre el estado interno y el
++                # bróker real, revisa MANUALMENTE la posición en MT5.
++                if signal.mt5_ticket:
++                    ok = mt5_executor.close_full(signal.mt5_ticket, signal.asset, direction, closing_lot)
++                    if not ok:
++                        logger.error(
++                            f"MT5: no se pudo cerrar en el bróker la posición real "
++                            f"{signal.mt5_ticket} ({signal.asset}) al tocar SL. "
++                            f"Verifica manualmente en MT5 -- el tracking interno "
++                            f"continúa y marcará la señal como cerrada igualmente."
++                        )
++
+                 self._finalize_metrics(signal, current_sl)
+                 signal.remaining_lot_size = 0.0
+                 await self._close_position(signal_id, final_status, current_sl, total_pnl)
+@@ -249,6 +265,15 @@ class PositionMonitor:
+                 leg_pnl = pnl_for(tp3, closing_lot)
+                 total_pnl = round(signal.realized_partial_pnl + leg_pnl, 2)
+ 
++                if signal.mt5_ticket:
++                    ok = mt5_executor.close_full(signal.mt5_ticket, signal.asset, direction, closing_lot)
++                    if not ok:
++                        logger.error(
++                            f"MT5: no se pudo cerrar en el bróker la posición real "
++                            f"{signal.mt5_ticket} ({signal.asset}) al tocar TP3. "
++                            f"Verifica manualmente en MT5."
++                        )
++
+                 self._finalize_metrics(signal, tp3)
+                 signal.remaining_lot_size = 0.0
+                 await self._close_position(signal_id, SignalStatus.CLOSED_TP3, tp3, total_pnl)
+@@ -268,6 +293,15 @@ class PositionMonitor:
+                 signal.stop_loss = tp1  # Asegura al menos 1R en el remanente
+                 signal.breakeven_active = True
+ 
++                # CAMBIO: ejecutar el cierre parcial y la subida de SL
++                # también en la posición real de MT5, si existe.
++                if signal.mt5_ticket:
++                    ok = mt5_executor.close_partial(signal.mt5_ticket, signal.asset, direction, closing_lot)
++                    if not ok:
++                        logger.error(f"MT5: cierre parcial en TP2 falló para ticket {signal.mt5_ticket} ({signal.asset}).")
++                    if not mt5_executor.modify_sl(signal.mt5_ticket, tp1):
++                        logger.error(f"MT5: no se pudo subir el SL a TP1 para ticket {signal.mt5_ticket} ({signal.asset}).")
++
+                 await excel_manager.register_partial_close(
+                     signal_id, "TP2", tp2, closing_lot, leg_pnl, signal.remaining_lot_size
+                 )
+@@ -299,6 +333,15 @@ class PositionMonitor:
+                 signal.stop_loss = entry_price  # Breakeven
+                 signal.breakeven_active = True
+ 
++                # CAMBIO: ejecutar el cierre parcial y el breakeven también
++                # en la posición real de MT5, si existe.
++                if signal.mt5_ticket:
++                    ok = mt5_executor.close_partial(signal.mt5_ticket, signal.asset, direction, closing_lot)
++                    if not ok:
++                        logger.error(f"MT5: cierre parcial en TP1 falló para ticket {signal.mt5_ticket} ({signal.asset}).")
++                    if not mt5_executor.modify_sl(signal.mt5_ticket, entry_price):
++                        logger.error(f"MT5: no se pudo mover el SL a breakeven para ticket {signal.mt5_ticket} ({signal.asset}).")
++
+                 await excel_manager.register_partial_close(
+                     signal_id, "TP1", tp1, closing_lot, leg_pnl, signal.remaining_lot_size
+                 )
+diff --git a/app/services/signal_engine.py b/app/services/signal_engine.py
+index e42a07d..90adbfd 100644
+--- a/app/services/signal_engine.py
++++ b/app/services/signal_engine.py
+@@ -10,6 +10,7 @@ from app.models.signal import Signal, SignalDirection, SignalStatus
+ from app.services.market_data import market_data_service
+ from app.services.indicators import indicator_service
+ from app.services.excel_manager import excel_manager
++from app.services.mt5_executor import mt5_executor
+ from app.models.asset import Asset
+ from app.core.config import settings
+ 
+@@ -212,6 +213,25 @@ class SignalEngine:
+             signal = self._create_signal(asset, direction, df, indicators_met, smc_info=smc_info)
+             if signal:
+                 self.active_signals[signal.id] = signal
++
++                # CAMBIO: ejecución en vivo en MT5 (a pedido del usuario).
++                # Si MT5_LIVE_TRADING_ENABLED está en False (default), esto
++                # no hace nada y el sistema sigue funcionando en modo
++                # "solo señales" como hasta ahora. Si está habilitado, se
++                # abre una posición real con el SL/TP calculados y se guarda
++                # el ticket en la señal para poder gestionar cierres
++                # parciales y breakeven en position_monitor.py.
++                ticket = mt5_executor.open_position(signal)
++                if ticket:
++                    signal.mt5_ticket = ticket
++                elif settings.MT5_LIVE_TRADING_ENABLED:
++                    logger.error(
++                        f"MT5: la señal {signal.id} ({signal.asset}) se generó pero "
++                        f"la orden real NO pudo enviarse al bróker. Revisa los logs "
++                        f"anteriores para el motivo. La señal sigue registrada "
++                        f"normalmente (modo señal), pero no hay posición real abierta."
++                    )
++
+                 await excel_manager.register_signal(signal)
+                 logger.info(f"NEW SIGNAL: {signal.asset} {signal.direction.value} @ {signal.entry_price}")
+                 return signal
+diff --git a/requirements.txt b/requirements.txt
+index 3981161..7bb0655 100644
+--- a/requirements.txt
++++ b/requirements.txt
+@@ -46,3 +46,10 @@ google-api-python-client>=2.111.0
+ jinja2>=3.1.2
+ python-multipart>=0.0.9
+ aiofiles>=23.2.0
++
++# --- MetaTrader 5 (ejecución en vivo) ---
++# Solo funciona conectado a una terminal MT5 LOCAL (normalmente Windows).
++# En Linux/Mac, instalar igualmente no da error, pero mt5.initialize()
++# fallará a menos que MT5 corra bajo Wine o en un servidor Windows.
++# Si no vas a usar ejecución en vivo, puedes omitir esta dependencia.
++MetaTrader5>=5.0.45
+-- 
+2.43.0
+

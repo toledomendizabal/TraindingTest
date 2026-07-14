@@ -10,6 +10,7 @@ from app.models.signal import Signal, SignalDirection, SignalStatus
 from app.services.market_data import market_data_service
 from app.services.indicators import indicator_service
 from app.services.excel_manager import excel_manager
+from app.services.mt5_executor import mt5_executor
 from app.models.asset import Asset
 from app.core.config import settings
 
@@ -212,6 +213,25 @@ class SignalEngine:
             signal = self._create_signal(asset, direction, df, indicators_met, smc_info=smc_info)
             if signal:
                 self.active_signals[signal.id] = signal
+
+                # CAMBIO: ejecución en vivo en MT5 (a pedido del usuario).
+                # Si MT5_LIVE_TRADING_ENABLED está en False (default), esto
+                # no hace nada y el sistema sigue funcionando en modo
+                # "solo señales" como hasta ahora. Si está habilitado, se
+                # abre una posición real con el SL/TP calculados y se guarda
+                # el ticket en la señal para poder gestionar cierres
+                # parciales y breakeven en position_monitor.py.
+                ticket = mt5_executor.open_position(signal)
+                if ticket:
+                    signal.mt5_ticket = ticket
+                elif settings.MT5_LIVE_TRADING_ENABLED:
+                    logger.error(
+                        f"MT5: la señal {signal.id} ({signal.asset}) se generó pero "
+                        f"la orden real NO pudo enviarse al bróker. Revisa los logs "
+                        f"anteriores para el motivo. La señal sigue registrada "
+                        f"normalmente (modo señal), pero no hay posición real abierta."
+                    )
+
                 await excel_manager.register_signal(signal)
                 logger.info(f"NEW SIGNAL: {signal.asset} {signal.direction.value} @ {signal.entry_price}")
                 return signal

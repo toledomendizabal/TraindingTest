@@ -88,7 +88,8 @@ class ExcelManager:
             "smc_quality", "fvg_confluence", "liquidity_sweep",
             # CAMBIO (fix win-rate): columnas para cierre parcial escalonado
             "initial_lot_size", "remaining_lot_size",
-            "tp1_hit", "tp2_hit", "breakeven_active", "realized_partial_pnl"
+            "tp1_hit", "tp2_hit", "breakeven_active", "realized_partial_pnl",
+            "mt5_ticket"
         ]
         df = pd.DataFrame(columns=columns)
         df.to_excel(self.signals_file, index=False, sheet_name="Signals")
@@ -181,7 +182,8 @@ class ExcelManager:
                 "tp1_hit": getattr(signal, "tp1_hit", False),
                 "tp2_hit": getattr(signal, "tp2_hit", False),
                 "breakeven_active": getattr(signal, "breakeven_active", False),
-                "realized_partial_pnl": getattr(signal, "realized_partial_pnl", 0.0)
+                "realized_partial_pnl": getattr(signal, "realized_partial_pnl", 0.0),
+                "mt5_ticket": getattr(signal, "mt5_ticket", None)
             }
 
             df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)

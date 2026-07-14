@@ -74,6 +74,10 @@ class Signal(BaseModel):
     tp2_hit: bool = False
     breakeven_active: bool = False      # True si el SL ya fue movido a entry_price (o mejor)
     realized_partial_pnl: float = 0.0   # P/L ya materializado por cierres parciales (TP1/TP2)
+    # Ticket de la posición en MetaTrader 5, si la ejecución en vivo está
+    # habilitada (MT5_LIVE_TRADING_ENABLED=true). None si la señal es
+    # solo informativa (no se envió orden real al bróker).
+    mt5_ticket: Optional[int] = None
 
     class Config:
         json_encoders = {

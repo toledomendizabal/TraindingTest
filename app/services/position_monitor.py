@@ -9,6 +9,7 @@ from app.models.signal import SignalStatus, SignalDirection
 from app.models.asset import Asset, ASSET_CATALOG
 from app.services.market_data import market_data_service
 from app.services.excel_manager import excel_manager
+from app.services.mt5_executor import mt5_executor
 
 
 class PositionMonitor:
@@ -238,6 +239,21 @@ class PositionMonitor:
                 if signal.tp1_hit:
                     final_status = SignalStatus.CLOSED_BE
 
+                # CAMBIO: cierre real en MT5 si esta señal tiene una posición
+                # abierta en vivo (signal.mt5_ticket). Si falla, se registra
+                # el error pero el tracking interno (Excel) continúa igual
+                # -- ante una discrepancia entre el estado interno y el
+                # bróker real, revisa MANUALMENTE la posición en MT5.
+                if signal.mt5_ticket:
+                    ok = mt5_executor.close_full(signal.mt5_ticket, signal.asset, direction, closing_lot)
+                    if not ok:
+                        logger.error(
+                            f"MT5: no se pudo cerrar en el bróker la posición real "
+                            f"{signal.mt5_ticket} ({signal.asset}) al tocar SL. "
+                            f"Verifica manualmente en MT5 -- el tracking interno "
+                            f"continúa y marcará la señal como cerrada igualmente."
+                        )
+
                 self._finalize_metrics(signal, current_sl)
                 signal.remaining_lot_size = 0.0
                 await self._close_position(signal_id, final_status, current_sl, total_pnl)
@@ -248,6 +264,15 @@ class PositionMonitor:
                 closing_lot = signal.remaining_lot_size
                 leg_pnl = pnl_for(tp3, closing_lot)
                 total_pnl = round(signal.realized_partial_pnl + leg_pnl, 2)
+
+                if signal.mt5_ticket:
+                    ok = mt5_executor.close_full(signal.mt5_ticket, signal.asset, direction, closing_lot)
+                    if not ok:
+                        logger.error(
+                            f"MT5: no se pudo cerrar en el bróker la posición real "
+                            f"{signal.mt5_ticket} ({signal.asset}) al tocar TP3. "
+                            f"Verifica manualmente en MT5."
+                        )
 
                 self._finalize_metrics(signal, tp3)
                 signal.remaining_lot_size = 0.0
@@ -267,6 +292,15 @@ class PositionMonitor:
                 signal.tp2_hit = True
                 signal.stop_loss = tp1  # Asegura al menos 1R en el remanente
                 signal.breakeven_active = True
+
+                # CAMBIO: ejecutar el cierre parcial y la subida de SL
+                # también en la posición real de MT5, si existe.
+                if signal.mt5_ticket:
+                    ok = mt5_executor.close_partial(signal.mt5_ticket, signal.asset, direction, closing_lot)
+                    if not ok:
+                        logger.error(f"MT5: cierre parcial en TP2 falló para ticket {signal.mt5_ticket} ({signal.asset}).")
+                    if not mt5_executor.modify_sl(signal.mt5_ticket, tp1):
+                        logger.error(f"MT5: no se pudo subir el SL a TP1 para ticket {signal.mt5_ticket} ({signal.asset}).")
 
                 await excel_manager.register_partial_close(
                     signal_id, "TP2", tp2, closing_lot, leg_pnl, signal.remaining_lot_size
@@ -298,6 +332,15 @@ class PositionMonitor:
                 signal.tp1_hit = True
                 signal.stop_loss = entry_price  # Breakeven
                 signal.breakeven_active = True
+
+                # CAMBIO: ejecutar el cierre parcial y el breakeven también
+                # en la posición real de MT5, si existe.
+                if signal.mt5_ticket:
+                    ok = mt5_executor.close_partial(signal.mt5_ticket, signal.asset, direction, closing_lot)
+                    if not ok:
+                        logger.error(f"MT5: cierre parcial en TP1 falló para ticket {signal.mt5_ticket} ({signal.asset}).")
+                    if not mt5_executor.modify_sl(signal.mt5_ticket, entry_price):
+                        logger.error(f"MT5: no se pudo mover el SL a breakeven para ticket {signal.mt5_ticket} ({signal.asset}).")
 
                 await excel_manager.register_partial_close(
                     signal_id, "TP1", tp1, closing_lot, leg_pnl, signal.remaining_lot_size

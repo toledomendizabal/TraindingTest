@@ -32,6 +32,13 @@ aiosqlite>=0.20.0
 # --- Logging ---
 loguru>=0.7.2
 
+# --- MetaTrader 5 (ejecución en vivo) ---
+# Solo funciona conectado a una terminal MT5 LOCAL (normalmente Windows).
+# En Linux/Mac, instalar igualmente no da error, pero mt5.initialize()
+# fallará a menos que MT5 corra bajo Wine o en un servidor Windows.
+# Si no vas a usar ejecución en vivo, puedes omitir esta dependencia.
+MetaTrader5>=5.0.45
+
 # --- Configuración ---
 python-dotenv>=1.0.0
 pydantic>=2.5.0

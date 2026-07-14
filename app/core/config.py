@@ -38,6 +38,35 @@ class Settings(BaseSettings):
     MT4_FILES_PATH: str = os.getenv("MT4_FILES_PATH", "")
     MT4_SYNC_ENABLED: bool = True
 
+    # --- MetaTrader 5: ejecución en vivo (órdenes reales) ---
+    # IMPORTANTE: el paquete oficial `MetaTrader5` de Python se conecta a
+    # una instancia LOCAL de la terminal MT5 vía IPC -- no es una API
+    # remota. Esto requiere que la terminal MT5 esté instalada y abierta en
+    # la MISMA máquina donde corre este backend (normalmente Windows; en
+    # Linux/Mac se necesita correr MT5 bajo Wine o en una VM/servidor
+    # Windows dedicado).
+    #
+    # MT5_LIVE_TRADING_ENABLED es un interruptor de seguridad explícito:
+    # por defecto es False (el sistema solo genera señales, sin tocar el
+    # bróker). Debe activarse a propósito en .env, e idealmente probarse
+    # primero contra una cuenta DEMO antes de usar una cuenta real.
+    MT5_LIVE_TRADING_ENABLED: bool = os.getenv("MT5_LIVE_TRADING_ENABLED", "false").lower() == "true"
+    MT5_LOGIN: str = os.getenv("MT5_LOGIN", "")
+    MT5_PASSWORD: str = os.getenv("MT5_PASSWORD", "")
+    MT5_SERVER: str = os.getenv("MT5_SERVER", "")
+    # Ruta al ejecutable terminal64.exe. Opcional: si se deja vacío, se usa
+    # la terminal MT5 ya instalada por defecto en el sistema (la que se
+    # encuentre registrada). Solo hace falta si tienes varias terminales
+    # instaladas o una instalación portable.
+    MT5_TERMINAL_PATH: str = os.getenv("MT5_TERMINAL_PATH", "")
+    # Número "mágico" para identificar las órdenes de este sistema entre
+    # las demás operaciones de la cuenta (útil si operas manualmente
+    # también en la misma cuenta).
+    MT5_MAGIC_NUMBER: int = int(os.getenv("MT5_MAGIC_NUMBER", "202607"))
+    # Desviación máxima de precio permitida (en puntos del bróker) al
+    # enviar una orden a mercado, antes de que se rechace por slippage.
+    MT5_DEVIATION_POINTS: int = int(os.getenv("MT5_DEVIATION_POINTS", "20"))
+
     # --- Risk / Win-Rate Tuning (CAMBIO: revisión de causas del 25% win rate) ---
     # Session Filter: restrict trading to higher-liquidity hours (UTC).
     # Operar 24h (incluyendo sesión asiática de baja liquidez) degrada el ratio señal/ruido.
