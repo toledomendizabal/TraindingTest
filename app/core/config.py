@@ -111,7 +111,21 @@ class Settings(BaseSettings):
     # TP1 se usa para cierre parcial + mover SL a breakeven (sube el win rate
     # real, porque una operación que llega a 1R y luego revierte deja de ser
     # una pérdida total y pasa a ser una ganancia parcial o un breakeven).
-    TP1_R_MULTIPLE: float = 1.0
+    # CAMBIO (a pedido explícito del usuario, 2026-07-15): TP1 bajado de
+    # 1.0R a 0.7R para subir el % de aciertos (el "win rate" de este sistema
+    # se define como % de operaciones que tocan TP1 antes de revertir a SL).
+    # TRADE-OFF ACEPTADO POR EL USUARIO: un TP1 más cercano es más fácil de
+    # alcanzar, pero cada acierto en TP1 ahora vale menos dinero (0.7R en
+    # vez de 1R sobre el 50% del lote), mientras que las pérdidas por SL
+    # siguen costando lo mismo. Esto puede subir el % de aciertos nominal
+    # sin necesariamente subir -- e incluso podría bajar -- el P/L neto. No
+    # se pudo simular con precisión (se necesitarían datos de precio
+    # intra-vela, no solo el resultado final por operación). Recomendado:
+    # recolectar datos reales con este valor durante unos días y volver a
+    # analizar el P/L neto, no solo el % de aciertos, antes de decidir si
+    # mantenerlo. TP2/TP3 quedan sin cambios (siguen en 2R/3R sobre el
+    # mismo SL, no relativos a TP1).
+    TP1_R_MULTIPLE: float = 0.7
     TP2_R_MULTIPLE: float = 2.0
     TP3_R_MULTIPLE: float = 3.0
 
