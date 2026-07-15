@@ -53,6 +53,14 @@ async def update_config(config: ConfigUpdate):
                 if "risk_percentage" in config.parameters:
                     settings.RISK_PERCENTAGE = float(config.parameters["risk_percentage"])
 
+            # CAMBIO: forzar recarga inmediata en signal_engine (min_indicators,
+            # signal_timeframe) para que los cambios de config apliquen sin
+            # tener que reiniciar el proceso. Antes esto solo se leía una vez
+            # al arrancar, así que los cambios vía dashboard/API quedaban sin
+            # efecto hasta un reinicio manual.
+            from app.services.signal_engine import signal_engine
+            signal_engine.reload_config()
+
             return {"status": "success", "message": "Configuration updated"}
         else:
             raise HTTPException(status_code=500, detail="Failed to update configuration")
