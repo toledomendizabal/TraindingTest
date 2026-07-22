@@ -65,6 +65,36 @@ async def get_kpis():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/kpis/daily")
+async def get_daily_kpis():
+    """
+    KPIs diarios (win rate, P/L neto, profit factor) agrupados por día de
+    cierre -- para el calendario del dashboard. Se recalcula en vivo desde
+    signals_tracking.xlsx (siempre al día), y por separado se mantiene
+    daily_kpis.xlsx actualizado por el scheduler para tenerlo también como
+    archivo de referencia/reporte.
+    """
+    try:
+        daily_records = excel_manager.get_daily_kpis()
+        return {"days": daily_records}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/kpis/daily/regenerate")
+async def regenerate_daily_kpis_file():
+    """Fuerza la regeneración inmediata de daily_kpis.xlsx (bajo demanda, sin esperar al scheduler)."""
+    try:
+        ok = await excel_manager.update_daily_kpis_file()
+        if not ok:
+            raise HTTPException(status_code=500, detail="No se pudo regenerar daily_kpis.xlsx")
+        return {"status": "success", "message": "daily_kpis.xlsx regenerado"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/scheduler/status")
 async def get_scheduler_status():
     """Get scheduler jobs status."""

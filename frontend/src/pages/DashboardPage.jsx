@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import { dashboardApi, signalsApi } from '../services/api'
+import KPICalendar from '../components/KPICalendar'
 
 function StatCard({ title, value, subtitle, color = 'primary' }) {
   const colorClasses = {
@@ -204,6 +205,9 @@ function DashboardPage() {
           </div>
         </div>
       </div>
+
+      {/* Calendario de KPIs diarios */}
+      <KPICalendar />
 
       {error && (
         <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-4">

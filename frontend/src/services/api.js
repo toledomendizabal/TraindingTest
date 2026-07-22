@@ -30,6 +30,8 @@ export const signalsApi = {
 export const dashboardApi = {
   getOverview: () => api.get('/dashboard/overview'),
   getKPIs: () => api.get('/dashboard/kpis'),
+  getDailyKPIs: () => api.get('/dashboard/kpis/daily'),
+  regenerateDailyKPIs: () => api.post('/dashboard/kpis/daily/regenerate'),
   getSchedulerStatus: () => api.get('/dashboard/scheduler/status'),
   getLogs: (lines = 50) => api.get('/dashboard/logs', { params: { lines } })
 }

@@ -60,6 +60,9 @@ class ExcelManager:
         self.excel_dir = settings.EXCEL_DIR
         self.signals_file = os.path.join(self.excel_dir, "signals_tracking.xlsx")
         self.config_file = os.path.join(self.excel_dir, "trading_config.xlsx")
+        # Reporte diario de KPIs (win rate, P/L neto, etc. por día), para
+        # el calendario del dashboard y como archivo de referencia externo.
+        self.daily_kpis_file = os.path.join(self.excel_dir, "daily_kpis.xlsx")
         self._ensure_files()
 
     def _ensure_files(self):
@@ -518,6 +521,89 @@ class ExcelManager:
                 "wins": 0, "losses": 0, "win_rate": 0.0, "total_profit": 0.0,
                 "total_loss": 0.0, "net_profit": 0.0, "profit_factor": 0.0
             }
+
+    def get_daily_kpis(self) -> List[Dict]:
+        """
+        Calcula los KPIs (win rate, P/L neto, profit factor, etc.) agrupados
+        por día de cierre ("corte diario"), a partir de las señales
+        cerradas en signals_tracking.xlsx.
+
+        Se usa tanto para poblar el calendario del dashboard como para
+        generar el archivo daily_kpis.xlsx (ver `update_daily_kpis_file`).
+
+        Retorna una lista de dicts, uno por día, ordenados por fecha
+        ascendente. Cada dict incluye: date (YYYY-MM-DD), total_trades,
+        wins, losses, win_rate, total_profit, total_loss, net_profit,
+        profit_factor.
+        """
+        try:
+            df = pd.read_excel(self.signals_file, sheet_name="Signals")
+            closed = df[df["status"] != "ACTIVE"].copy()
+            if closed.empty:
+                return []
+
+            # closed_at se guarda como string ISO (datetime.isoformat()).
+            # errors="coerce" descarta filas con fecha inválida/vacía en vez
+            # de romper todo el cálculo.
+            closed["closed_date"] = pd.to_datetime(closed["closed_at"], errors="coerce").dt.date
+            closed = closed.dropna(subset=["closed_date"])
+            if closed.empty:
+                return []
+
+            daily_records = []
+            for day, group in closed.groupby("closed_date"):
+                wins = int(len(group[group["profit_loss"] > 0]))
+                losses = int(len(group[group["profit_loss"] < 0]))
+                total_trades = int(len(group))
+                total_profit = float(group[group["profit_loss"] > 0]["profit_loss"].sum())
+                total_loss = float(abs(group[group["profit_loss"] < 0]["profit_loss"].sum()))
+                net_profit = float(total_profit - total_loss)
+                win_rate = float((wins / total_trades * 100) if total_trades > 0 else 0)
+                profit_factor = float((total_profit / total_loss) if total_loss > 0 else 0)
+
+                daily_records.append({
+                    "date": day.strftime("%Y-%m-%d"),
+                    "total_trades": total_trades,
+                    "wins": wins,
+                    "losses": losses,
+                    "win_rate": round(win_rate, 2),
+                    "total_profit": round(total_profit, 2),
+                    "total_loss": round(total_loss, 2),
+                    "net_profit": round(net_profit, 2),
+                    "profit_factor": round(profit_factor, 2)
+                })
+
+            daily_records.sort(key=lambda r: r["date"])
+            return daily_records
+
+        except Exception as e:
+            logger.error(f"Error calculando KPIs diarios: {e}")
+            return []
+
+    async def update_daily_kpis_file(self) -> bool:
+        """
+        Regenera por completo daily_kpis.xlsx a partir de los KPIs diarios
+        actuales (ver `get_daily_kpis`). Se recalcula desde cero cada vez
+        (no se va acumulando/parcheando) para que nunca quede desalineado
+        con signals_tracking.xlsx -- el costo de recalcular es bajo incluso
+        con varios cientos de días de historial.
+
+        Se llama automáticamente desde el scheduler (cada 15 minutos y al
+        cierre del día), y también puede llamarse manualmente vía el
+        endpoint de la API para refrescar bajo demanda.
+        """
+        try:
+            daily_records = self.get_daily_kpis()
+            df = pd.DataFrame(daily_records) if daily_records else pd.DataFrame(
+                columns=["date", "total_trades", "wins", "losses", "win_rate",
+                         "total_profit", "total_loss", "net_profit", "profit_factor"]
+            )
+            df.to_excel(self.daily_kpis_file, index=False, sheet_name="DailyKPIs")
+            logger.info(f"daily_kpis.xlsx actualizado: {len(df)} día(s) registrados.")
+            return True
+        except Exception as e:
+            logger.error(f"Error actualizando daily_kpis.xlsx: {e}")
+            return False
 
 
 # Singleton instance

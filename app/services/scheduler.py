@@ -69,6 +69,30 @@ class SchedulerService:
             coalesce=True
         )
 
+        # KPIs diarios: se regenera daily_kpis.xlsx cada 15 minutos, para
+        # que el día en curso se mantenga razonablemente al día en el
+        # calendario del dashboard sin recalcular en cada request.
+        self.scheduler.add_job(
+            self._update_daily_kpis,
+            IntervalTrigger(minutes=15),
+            id="daily_kpis_refresh",
+            name="Daily KPIs Refresh",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True
+        )
+
+        # Corte diario formal de KPIs a las 23:57 (justo antes del backtest
+        # diario de las 23:59), para dejar el día ya cerrado con su
+        # resultado final en daily_kpis.xlsx.
+        self.scheduler.add_job(
+            self._update_daily_kpis,
+            CronTrigger(hour=23, minute=57),
+            id="daily_kpis_close",
+            name="Daily KPIs Close (corte diario)",
+            replace_existing=True
+        )
+
         self.scheduler.start()
         self._is_running = True
         logger.info("Scheduler started with all jobs configured")
@@ -137,6 +161,14 @@ class SchedulerService:
             excel_manager._ensure_files()
         except Exception as e:
             logger.error(f"Error syncing Excel: {e}")
+
+    async def _update_daily_kpis(self):
+        """Regenera daily_kpis.xlsx con los KPIs (win rate, P/L neto, etc.) agrupados por día."""
+        try:
+            from app.services.excel_manager import excel_manager
+            await excel_manager.update_daily_kpis_file()
+        except Exception as e:
+            logger.error(f"Error actualizando KPIs diarios: {e}")
 
     async def _send_backtest_email(self, result, report_type: str):
         """Send backtesting report via email."""

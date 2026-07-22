@@ -54,7 +54,7 @@ try:
     test("Settings carga correctamente", True)
     test("Capital inicial = $10,000", settings.INITIAL_CAPITAL == 10000.0)
     test("Riesgo = 0.3%", settings.RISK_PERCENTAGE == 0.3)
-    test("11 activos configurados (USDJPY excluido por win rate)", len(settings.ACTIVE_ASSETS) == 11)
+    test("9 activos configurados (USDJPY/USDCHF/USDCAD excluidos por win rate)", len(settings.ACTIVE_ASSETS) == 9)
     test("Puerto API = 8000", settings.API_PORT == 8000)
 except Exception as e:
     test("Módulo de configuración", False, str(e))
@@ -200,7 +200,7 @@ print("\n[7] MOTOR DE SEÑALES")
 try:
     from app.services.signal_engine import signal_engine
     test("Signal engine instanciado", signal_engine is not None)
-    test("Min indicators = 5", signal_engine.min_indicators == 5)
+    test("Min indicators default = 6 (revertido con datos reales, ver análisis 2026-07-22)", signal_engine.MIN_INDICATORS_FOR_SIGNAL == 6)
 
 except Exception as e:
     test("Motor de señales", False, str(e))

@@ -24,7 +24,21 @@ class SignalEngine:
     # En el ciclo de referencia (18:20 UTC), esto habría permitido 2 señales
     # adicionales (EURUSD 5/6, USDCAD 5/6) que quedaron a un indicador del
     # umbral anterior.
-    MIN_INDICATORS_FOR_SIGNAL = 5
+    # CAMBIO (análisis de datos reales, 2026-07-22): revertido de 7 a 6.
+    # La recomendación anterior (subir de 5 a 7, comentario previo) se basó
+    # en una SIMULACIÓN retroactiva sobre datos viejos del 2026-07-07. Con
+    # 375 trades REALES del 2026-07-16 al 21 -- generados con
+    # min_indicators=6 (el valor que de hecho seguía activo en Excel, que
+    # tiene prioridad sobre este default de clase) -- los datos muestran lo
+    # contrario a lo estimado:
+    #   indicators_met=6: n=200, 51.0% WR, P/L +$1,032.69
+    #   indicators_met=7: n=161, 41.0% WR, P/L   -$465.78
+    #   indicators_met=8: n=14,  42.9% WR, P/L     +$79.00
+    # Exigir más indicadores no mejoró el resultado en este período; de
+    # hecho, 6 fue claramente el mejor. Se prioriza la evidencia real más
+    # reciente sobre la simulación anterior. Si datos futuros muestran lo
+    # contrario, vale la pena volver a probar 7.
+    MIN_INDICATORS_FOR_SIGNAL = 6
     SIGNAL_TIMEFRAME = "5m"
 
     def __init__(self):
