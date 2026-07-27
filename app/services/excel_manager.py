@@ -92,7 +92,7 @@ class ExcelManager:
             # CAMBIO (fix win-rate): columnas para cierre parcial escalonado
             "initial_lot_size", "remaining_lot_size",
             "tp1_hit", "tp2_hit", "breakeven_active", "realized_partial_pnl",
-            "mt5_ticket"
+            "mt5_ticket", "strategy"
         ]
         df = pd.DataFrame(columns=columns)
         df.to_excel(self.signals_file, index=False, sheet_name="Signals")
@@ -144,6 +144,21 @@ class ExcelManager:
     async def register_signal(self, signal) -> bool:
         """Register a new signal in the Excel file."""
         try:
+            # CAMBIO (a pedido explícito del usuario, 2026-07-25): "asegúrate
+            # que las operaciones sean realizadas através de una estrategia".
+            # Red de seguridad: si por cualquier motivo llegara aquí una
+            # señal sin estrategia asignada (ej. un futuro punto del código
+            # que construya Signal directamente sin pasar por
+            # signal_engine.py), se le asigna un valor de respaldo visible
+            # en el log -- para que quede constancia del hueco -- en vez de
+            # dejarla registrada silenciosamente sin atribución.
+            if not getattr(signal, "strategy", None):
+                logger.warning(
+                    f"Señal {signal.id} ({signal.asset}) registrada SIN estrategia asignada "
+                    f"-- revisar el punto del código que la creó. Se marca como 'UNKNOWN'."
+                )
+                signal.strategy = "UNKNOWN"
+
             df = pd.read_excel(self.signals_file, sheet_name="Signals")
 
             new_row = {
@@ -186,7 +201,8 @@ class ExcelManager:
                 "tp2_hit": getattr(signal, "tp2_hit", False),
                 "breakeven_active": getattr(signal, "breakeven_active", False),
                 "realized_partial_pnl": getattr(signal, "realized_partial_pnl", 0.0),
-                "mt5_ticket": getattr(signal, "mt5_ticket", None)
+                "mt5_ticket": getattr(signal, "mt5_ticket", None),
+                "strategy": getattr(signal, "strategy", "UNKNOWN")
             }
 
             df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
