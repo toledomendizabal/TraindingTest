@@ -36,6 +36,12 @@ export const dashboardApi = {
   getLogs: (lines = 50) => api.get('/dashboard/logs', { params: { lines } })
 }
 
+export const strategiesApi = {
+  getRecommendations: () => api.get('/strategies/recommendations'),
+  getRecommendationForAsset: (asset) => api.get(`/strategies/recommendations/${asset}`),
+  evaluateAsset: (asset) => api.get(`/strategies/evaluate/${asset}`)
+}
+
 export const configApi = {
   getCurrent: () => api.get('/config/current'),
   update: (config) => api.put('/config/update', config),

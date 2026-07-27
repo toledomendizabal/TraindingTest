@@ -119,7 +119,7 @@ class ExcelManager:
         # Trading parameters
         params_data = {
             "parameter": ["initial_capital", "risk_percentage", "min_indicators", "signal_timeframe"],
-            "value": [settings.INITIAL_CAPITAL, settings.RISK_PERCENTAGE, 6, "5m"]
+            "value": [settings.INITIAL_CAPITAL, settings.RISK_PERCENTAGE, settings.MIN_INDICATORS_FOR_SIGNAL, "5m"]  # CAMBIO (fix de raíz 2026-07-22): antes hardcodeado a 6
         }
         params_df = pd.DataFrame(params_data)
 
@@ -382,7 +382,7 @@ class ExcelManager:
                 result["parameters"] = {
                     "initial_capital": settings.INITIAL_CAPITAL,
                     "risk_percentage": settings.RISK_PERCENTAGE,
-                    "min_indicators": 6,
+                    "min_indicators": settings.MIN_INDICATORS_FOR_SIGNAL,  # CAMBIO (fix de raíz 2026-07-22): antes hardcodeado, desincronizado de signal_engine.py
                     "signal_timeframe": "5m"
                 }
 
@@ -409,7 +409,7 @@ class ExcelManager:
                 "parameters": {
                     "initial_capital": settings.INITIAL_CAPITAL,
                     "risk_percentage": settings.RISK_PERCENTAGE,
-                    "min_indicators": 6,
+                    "min_indicators": settings.MIN_INDICATORS_FOR_SIGNAL,  # CAMBIO (fix de raíz 2026-07-22): antes hardcodeado, desincronizado de signal_engine.py
                     "signal_timeframe": "5m"
                 },
                 "indicators": []
@@ -449,7 +449,7 @@ class ExcelManager:
                 params = [
                     {"parameter": "initial_capital", "value": settings.INITIAL_CAPITAL},
                     {"parameter": "risk_percentage", "value": settings.RISK_PERCENTAGE},
-                    {"parameter": "min_indicators", "value": 6},
+                    {"parameter": "min_indicators", "value": settings.MIN_INDICATORS_FOR_SIGNAL},  # CAMBIO (fix de raíz 2026-07-22)
                     {"parameter": "signal_timeframe", "value": "5m"}
                 ]
                 sheets_to_write["Parameters"] = pd.DataFrame(params)

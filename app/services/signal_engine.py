@@ -36,9 +36,22 @@ class SignalEngine:
     #   indicators_met=8: n=14,  42.9% WR, P/L     +$79.00
     # Exigir más indicadores no mejoró el resultado en este período; de
     # hecho, 6 fue claramente el mejor. Se prioriza la evidencia real más
-    # reciente sobre la simulación anterior. Si datos futuros muestran lo
-    # contrario, vale la pena volver a probar 7.
-    MIN_INDICATORS_FOR_SIGNAL = 6
+    # reciente sobre la simulación anterior.
+    #
+    # CAMBIO (a pedido explícito del usuario, 2026-07-22): "los indicadores
+    # podrían ser menos pero que sean más contundentes". Se reduce a 4,
+    # mientras que en indicators.py se reintrodujo un umbral de score
+    # ponderado (settings.MIN_SCORE_RATIO) que exige que los indicadores
+    # confirmando aporten peso real, no cualquier combinación de
+    # osciladores débiles. Es decir: menos exigencia en CANTIDAD, más
+    # exigencia en CALIDAD/CONVICCIÓN de cada confirmación.
+    #
+    # CAMBIO (fix de raíz, mismo día): este valor ahora es una referencia
+    # directa a settings.MIN_INDICATORS_FOR_SIGNAL (fuente única de
+    # verdad en config.py) en vez de un número duplicado aquí. Antes
+    # este valor podía quedar desincronizado del que excel_manager.py
+    # usaba como default al crear/leer trading_config.xlsx.
+    MIN_INDICATORS_FOR_SIGNAL = settings.MIN_INDICATORS_FOR_SIGNAL
     SIGNAL_TIMEFRAME = "5m"
 
     def __init__(self):
@@ -276,12 +289,106 @@ class SignalEngine:
             if signal:
                 new_signals.append(signal)
 
+            # CAMBIO (implementación del documento "4 Estrategias de Trading
+            # Multi-Timeframe"): si está habilitado, se intenta ADEMÁS la
+            # generación de señales vía las 4 estrategias del documento.
+            # Se respeta el mismo chequeo de señal activa (no abrir una
+            # segunda posición en el mismo activo, sea cual sea el origen).
+            if settings.STRATEGY_MODE_ENABLED and not self._has_active_signal(asset):
+                strategy_signals = await self.analyze_asset_via_strategies(asset)
+                new_signals.extend(strategy_signals)
+
         logger.info(
             f"[CICLO] Analizados {len(settings.ACTIVE_ASSETS)} activos -> "
             f"{len(new_signals)} señal(es) nueva(s). "
             f"Sesión activa (UTC {current_hour}:00): {'SÍ' if session_ok else 'NO -- fuera de ventana ' + str(settings.SESSION_START_HOUR_UTC) + '-' + str(settings.SESSION_END_HOUR_UTC) + ' UTC'}."
         )
         return new_signals
+
+    async def analyze_asset_via_strategies(self, asset: str) -> List[Signal]:
+        """
+        Evalúa las 4 estrategias del documento "Guía Detallada: 4
+        Estrategias de Trading Multi-Timeframe" para un activo (ver
+        `app/services/strategies.py`), y convierte cualquier candidato
+        que haya superado sus 3 fases en una Signal real, procesada por
+        el mismo pipeline que el motor genérico (registro en Excel,
+        ejecución en MT5 si está habilitada, tracking en memoria).
+
+        A diferencia del motor genérico, aquí el SL/TP y el % de riesgo
+        ya vienen definidos por la estrategia específica (cada una tiene
+        su propia relación riesgo:beneficio mínima y tamaño de riesgo
+        recomendado en el documento), así que no se recalculan aquí.
+        """
+        from app.services.strategies import strategy_engine
+        from app.services.excel_manager import excel_manager
+        from app.services.mt5_executor import mt5_executor
+        import uuid as uuid_module
+
+        created_signals = []
+        try:
+            candidates = await strategy_engine.evaluate_all(asset)
+        except Exception as e:
+            logger.error(f"Error evaluando estrategias multi-timeframe para {asset}: {e}")
+            return created_signals
+
+        for candidate in candidates:
+            try:
+                pip_info = Asset.get_pip_info(asset)
+                sl_distance = abs(candidate.entry_price - candidate.stop_loss)
+                if sl_distance <= 0:
+                    continue
+
+                risk_amount = settings.INITIAL_CAPITAL * (candidate.risk_pct / 100)
+                lot_size = round(max(0.01, risk_amount / (sl_distance * pip_info["contract_size"])), 2)
+
+                signal = Signal(
+                    id=str(uuid_module.uuid4())[:8],
+                    created_at=datetime.now(),
+                    asset=asset,
+                    direction=SignalDirection(candidate.direction),
+                    entry_price=round(candidate.entry_price, 5),
+                    stop_loss=round(candidate.stop_loss, 5),
+                    take_profit_1=round(candidate.take_profit_1, 5),
+                    take_profit_2=round(candidate.take_profit_2, 5),
+                    take_profit_3=round(candidate.take_profit_2, 5),  # las estrategias del documento usan 2 TPs, no 3
+                    sl_pips=round(sl_distance / pip_info["pip_size"], 1),
+                    tp1_pips=round(abs(candidate.take_profit_1 - candidate.entry_price) / pip_info["pip_size"], 1),
+                    tp2_pips=round(abs(candidate.take_profit_2 - candidate.entry_price) / pip_info["pip_size"], 1),
+                    tp3_pips=round(abs(candidate.take_profit_2 - candidate.entry_price) / pip_info["pip_size"], 1),
+                    lot_size=lot_size,
+                    initial_lot_size=lot_size,
+                    remaining_lot_size=lot_size,
+                    timeframe=self.signal_timeframe,
+                    indicators_met=0,  # no aplica: esta señal viene de una estrategia, no del conteo de indicadores
+                    score=0.0,
+                    session=market_data_service.get_current_session(),
+                    entry_hour=datetime.now().strftime("%H:%M"),
+                    strategy=candidate.strategy,
+                )
+
+                ticket = mt5_executor.open_position(signal)
+                if ticket:
+                    signal.mt5_ticket = ticket
+
+                self.active_signals[signal.id] = signal
+                await excel_manager.register_signal(signal)
+                logger.info(
+                    f"NEW SIGNAL [{candidate.strategy}]: {signal.asset} {signal.direction.value} "
+                    f"@ {signal.entry_price} (R:R min {candidate.risk_reward_min}, riesgo {candidate.risk_pct}%)"
+                )
+                created_signals.append(signal)
+
+                # Solo una señal por activo por ciclo, aunque varias
+                # estrategias hayan calzado simultáneamente -- se prioriza
+                # la primera encontrada (evaluate_all respeta el orden
+                # TREND_MTF -> BREAKOUT_VOLUME -> REVERSAL_ZONES ->
+                # SCALPING_TRIPLE) para no abrir posiciones duplicadas en
+                # el mismo activo desde estrategias distintas al mismo tiempo.
+                break
+            except Exception as e:
+                logger.error(f"Error creando señal desde estrategia {candidate.strategy} para {asset}: {e}")
+
+        return created_signals
 
     def _assess_smc_confluence(self, direction: str, entry_price: float, df: pd.DataFrame) -> dict:
         """

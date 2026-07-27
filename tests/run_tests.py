@@ -200,7 +200,7 @@ print("\n[7] MOTOR DE SEÑALES")
 try:
     from app.services.signal_engine import signal_engine
     test("Signal engine instanciado", signal_engine is not None)
-    test("Min indicators default = 6 (revertido con datos reales, ver análisis 2026-07-22)", signal_engine.MIN_INDICATORS_FOR_SIGNAL == 6)
+    test("Min indicators default = 4 + score mínimo 35% (menos cantidad, más contundencia, ver análisis 2026-07-22)", signal_engine.MIN_INDICATORS_FOR_SIGNAL == 4)
 
 except Exception as e:
     test("Motor de señales", False, str(e))
