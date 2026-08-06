@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import { dashboardApi, signalsApi } from '../services/api'
 import KPICalendar from '../components/KPICalendar'
-import StrategyRecommendations from '../components/StrategyRecommendations'
 
 function StatCard({ title, value, subtitle, color = 'primary' }) {
   const colorClasses = {
@@ -206,9 +205,6 @@ function DashboardPage() {
           </div>
         </div>
       </div>
-
-      {/* Estrategia recomendada por activo (documento multi-timeframe) */}
-      <StrategyRecommendations />
 
       {/* Calendario de KPIs diarios */}
       <KPICalendar />

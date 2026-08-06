@@ -7,7 +7,6 @@ from app.api.backtesting_api import router as backtest_router
 from app.api.auth import router as auth_router
 from app.api.websocket_api import router as ws_router
 from app.api.charts import router as charts_router
-from app.api.strategies_api import router as strategies_router
 
 api_router = APIRouter()
 
@@ -18,4 +17,3 @@ api_router.include_router(config_router, prefix="/config", tags=["Configuration"
 api_router.include_router(backtest_router, prefix="/backtesting", tags=["Backtesting"])
 api_router.include_router(auth_router, prefix="/auth", tags=["Authentication"])
 api_router.include_router(ws_router, prefix="/ws", tags=["WebSocket"])
-api_router.include_router(strategies_router, prefix="/strategies", tags=["Strategies"])

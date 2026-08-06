@@ -1,7 +1,6 @@
 """Technical indicators calculation service."""
 import pandas as pd
 import numpy as np
-from app.core.config import settings
 from typing import Dict, List, Tuple, Optional
 from loguru import logger
 from app.models.indicator import IndicatorConfig, get_default_indicators
@@ -350,39 +349,21 @@ class IndicatorService:
         # IMPORTANTE: la fuente de verdad del umbral mínimo es
         # el valor cargado en runtime (que puede venir de Excel).
         from app.services.signal_engine import signal_engine
-        min_indicators = getattr(signal_engine, "min_indicators", settings.MIN_INDICATORS_FOR_SIGNAL)
+        min_indicators = getattr(signal_engine, "min_indicators", 7)
 
         # Calculate max possible score
         max_possible_score = sum(ind.weight for ind in self.indicators if ind.enabled)
 
         # Conteo real y confiable de indicadores que confirmaron el lado ganador
         indicators_met = buy_hits if buy_score > sell_score else sell_hits
-        winning_score = buy_score if buy_score > sell_score else sell_score
 
-        # CAMBIO (a pedido explícito del usuario, 2026-07-22): "los
-        # indicadores podrían ser menos pero que sean más contundentes".
-        # Se reintroduce un umbral de score ponderado (`min_score_for_signal`),
-        # esta vez calibrado correctamente -- un intento anterior usaba un
-        # denominador arbitrario ("/12") que no correspondía al número real
-        # de indicadores habilitados, haciendo el umbral casi inalcanzable y
-        # bloqueando casi todas las señales.
-        #
-        # Aquí el umbral se fija como una fracción directa del score máximo
-        # posible (settings.MIN_SCORE_RATIO, default 35%). Esto premia
-        # confirmaciones de ALTO PESO (ej. el bloque de tendencia EMA200/50
-        # vale 3.5 él solo, MACD 1.5, Ichimoku 1.2) sobre acumular muchos
-        # indicadores de bajo peso (ej. Williams %R 0.8, SAR 0.6). Combinado
-        # con un `min_indicators` más bajo (ver signal_engine.py), el
-        # resultado neto es: menos indicadores exigidos POR CANTIDAD, pero
-        # cada uno que cuente debe aportar peso real -- no basta con juntar
-        # varios osciladores débiles para pasar el filtro.
-        min_score_for_signal = max_possible_score * settings.MIN_SCORE_RATIO
-
-        if (buy_score > sell_score and indicators_met >= min_indicators
-                and winning_score >= min_score_for_signal):
+        # CAMBIO FINAL: Priorizamos el conteo de indicadores (Min Indicators en Excel)
+        # Eliminamos el umbral de score ponderado (min_score_for_signal) porque estaba
+        # actuando como un segundo filtro invisible que bloqueaba señales válidas
+        # incluso cuando se cumplía el número mínimo de indicadores.
+        if buy_score > sell_score and indicators_met >= min_indicators:
             return "BUY", indicators_met, details
-        elif (sell_score > buy_score and indicators_met >= min_indicators
-                and winning_score >= min_score_for_signal):
+        elif sell_score > buy_score and indicators_met >= min_indicators:
             return "SELL", indicators_met, details
         else:
             return "NEUTRAL", indicators_met, details

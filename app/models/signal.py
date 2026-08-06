@@ -78,11 +78,6 @@ class Signal(BaseModel):
     # habilitada (MT5_LIVE_TRADING_ENABLED=true). None si la señal es
     # solo informativa (no se envió orden real al bróker).
     mt5_ticket: Optional[int] = None
-    # Nombre de la estrategia del documento "4 Estrategias de Trading
-    # Multi-Timeframe" que generó esta señal (TREND_MTF, BREAKOUT_VOLUME,
-    # REVERSAL_ZONES, SCALPING_TRIPLE), o None si la generó el motor
-    # genérico de confluencia de 18 indicadores (signal_engine.py).
-    strategy: Optional[str] = None
 
     class Config:
         json_encoders = {

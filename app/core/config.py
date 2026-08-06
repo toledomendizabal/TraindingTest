@@ -67,38 +67,6 @@ class Settings(BaseSettings):
     # enviar una orden a mercado, antes de que se rechace por slippage.
     MT5_DEVIATION_POINTS: int = int(os.getenv("MT5_DEVIATION_POINTS", "20"))
 
-    # CAMBIO (fix de raíz, 2026-07-22): fuente única de verdad para el
-    # número mínimo de indicadores. Antes este valor estaba duplicado y
-    # desincronizado en varios lugares (la constante de clase
-    # `SignalEngine.MIN_INDICATORS_FOR_SIGNAL` y varios valores
-    # hardcodeados dentro de excel_manager.py). Ahora todos referencian
-    # este único valor.
-    #
-    # CAMBIO (a pedido explícito del usuario, 2026-07-22): bajado a 4.
-    # "Los indicadores podrían ser menos pero que sean más contundentes":
-    # se reduce la cantidad exigida, mientras que en indicators.py se
-    # reintrodujo un umbral de score ponderado (MIN_SCORE_RATIO) que
-    # exige que los indicadores confirmando aporten peso real (ej. el
-    # bloque de tendencia EMA200/50 o MACD), no cualquier combinación de
-    # osciladores débiles.
-    MIN_INDICATORS_FOR_SIGNAL: int = 4
-
-    # Umbral de score ponderado mínimo, como fracción del score máximo
-    # posible (19.0 con los 18 indicadores habilitados por defecto).
-    # Calibrado con simulación de mercado (600 escenarios sintéticos)
-    # para que, junto con MIN_INDICATORS_FOR_SIGNAL=4, produzca una tasa
-    # de señales razonable (~10-15%). Ver indicators.py::evaluate_signals.
-    MIN_SCORE_RATIO: float = 0.35
-
-    # CAMBIO (implementación del documento "4 Estrategias de Trading
-    # Multi-Timeframe", 2026-07-23): interruptor para activar la
-    # generación de señales vía las 4 estrategias del documento
-    # (TREND_MTF, BREAKOUT_VOLUME, REVERSAL_ZONES, SCALPING_TRIPLE),
-    # ADEMÁS del motor genérico de 18 indicadores ya existente. Por
-    # defecto deshabilitado -- probar primero las recomendaciones vía
-    # /api/strategies/recommendations antes de activar señales en vivo.
-    STRATEGY_MODE_ENABLED: bool = os.getenv("STRATEGY_MODE_ENABLED", "false").lower() == "true"
-
     # --- Risk / Win-Rate Tuning (CAMBIO: revisión de causas del 25% win rate) ---
     # Session Filter: restrict trading to higher-liquidity hours (UTC).
     # Operar 24h (incluyendo sesión asiática de baja liquidez) degrada el ratio señal/ruido.
@@ -159,29 +127,19 @@ class Settings(BaseSettings):
     # TP3 bajado de 3.0R a 2.2R para que el objetivo final sea más
     # alcanzable (buscando subir el 21.9% de operaciones que llegan a TP3
     # completo), conservando una recompensa todavía sólida.
-    # CAMBIO (a pedido explícito del usuario, 2026-07-22): "operaciones
-    # 1:3" -- se vuelve a la estructura clásica de riesgo:recompensa
-    # completa (arriesgar 1R para buscar 3R en el objetivo final), después
-    # de que el experimento con TP1 más cercano (0.7R, luego 0.85R)
-    # confirmó en datos reales que la ganancia asegurada en breakeven
-    # quedaba muy por debajo de una pérdida por SL (ver análisis
-    # 2026-07-22 anterior). TP1 vuelve a 1.0R: tocar el primer objetivo
-    # ahora vale, como mínimo, lo mismo en R que una pérdida por SL sobre
-    # esa misma fracción del lote.
-    TP1_R_MULTIPLE: float = 1.0
+    TP1_R_MULTIPLE: float = 0.85
     TP2_R_MULTIPLE: float = 2.0
-    TP3_R_MULTIPLE: float = 3.0
+    TP3_R_MULTIPLE: float = 2.2
 
     # Percentage of the position closed at each take-profit level.
     # Debe sumar 100.
-    # CAMBIO (mismo pedido, 2026-07-22): se reduce el cierre en TP1 de 60%
-    # a 35% -- deja más lotaje corriendo hacia TP2/TP3 (los objetivos de
-    # mayor recompensa), buscando que el profit factor agregado supere
-    # 1.5 aun con un win rate moderado (~46%). TP3 (remanente) sube de 20%
-    # a 40%.
-    TP1_CLOSE_PCT: float = 35.0
-    TP2_CLOSE_PCT: float = 25.0
-    TP3_CLOSE_PCT: float = 40.0
+    # CAMBIO (mismo análisis 2026-07-22): TP1 sube de 50% a 60% para que la
+    # ganancia asegurada en breakeven sea mayor por operación (ver
+    # justificación arriba). TP2 baja de 25% a 20% para compensar; TP3
+    # (remanente) queda en 20% en vez de 25%.
+    TP1_CLOSE_PCT: float = 60.0
+    TP2_CLOSE_PCT: float = 20.0
+    TP3_CLOSE_PCT: float = 20.0
 
     # Active Assets
     # CAMBIO (análisis de win rate, datos reales 2026-07-07): USDJPY excluido
