@@ -2,7 +2,7 @@
 from fastapi import APIRouter, HTTPException
 from typing import List, Optional
 from app.services.signal_engine import signal_engine
-from app.services.excel_manager import excel_manager
+from app.services.excel_manager import excel_manager, _sanitize_list
 from app.models.signal import Signal
 
 router = APIRouter()
@@ -23,7 +23,20 @@ async def get_all_signals():
     """Get all signals (active and closed)."""
     try:
         df = excel_manager.get_signals_dataframe()
-        return df.to_dict("records") if not df.empty else []
+        if df.empty:
+            return []
+        # CAMBIO (bug encontrado al probar el filtro de estrategia en el
+        # dashboard, 2026-07-27): `df.to_dict("records")` sin sanitizar
+        # devuelve valores NaN de pandas para cualquier columna vacía (ej.
+        # closed_at, exit_hour en señales activas), y el encoder JSON por
+        # defecto de FastAPI/Starlette NO acepta NaN ("Out of range float
+        # values are not JSON compliant") -- el endpoint completo
+        # devolvía un 500 en cuanto había AL MENOS una señal con algún
+        # campo vacío, lo cual es prácticamente siempre. El frontend lo
+        # tragaba en silencio (catch -> deja la lista vacía), mostrando
+        # "Sin señales registradas" sin ningún error visible. Se
+        # reutiliza el mismo sanitizador que ya usan get_active/get_closed.
+        return _sanitize_list(df.to_dict("records"))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
