@@ -285,30 +285,18 @@ class SignalEngine:
             (settings.SESSION_START_HOUR_UTC <= current_hour < settings.SESSION_END_HOUR_UTC)
 
         for asset in settings.ACTIVE_ASSETS:
-            # CAMBIO (a pedido explícito del usuario, 2026-07-25):
-            # "asegúrate que las operaciones sean realizadas através de
-            # una estrategia". Antes, con STRATEGY_MODE_ENABLED=true, las
-            # 4 estrategias del documento se evaluaban ADEMÁS del motor
-            # genérico de 18 indicadores -- ambos podían generar señales
-            # en el mismo ciclo. Ahora es EXCLUSIVO: si el modo de
-            # estrategias está activo, el motor genérico NO genera
-            # señales por su cuenta; toda operación debe originarse en
-            # una de las 4 estrategias documentadas (TREND_MTF,
-            # BREAKOUT_VOLUME, REVERSAL_ZONES, SCALPING_TRIPLE). Si está
-            # desactivado, se mantiene el comportamiento anterior
-            # (motor genérico), pero ver `_create_signal` más abajo:
-            # incluso esas señales quedan etiquetadas con una estrategia
-            # ("GENERIC_MULTI_INDICATOR"), de modo que NINGUNA señal,
-            # nunca, queda sin una estrategia identificada.
-            if settings.STRATEGY_MODE_ENABLED:
-                if not self._has_active_signal(asset):
-                    strategy_signals = await self.analyze_asset_via_strategies(asset)
-                    new_signals.extend(strategy_signals)
-                continue
-
             signal = await self.analyze_asset(asset)
             if signal:
                 new_signals.append(signal)
+
+            # CAMBIO (implementación del documento "4 Estrategias de Trading
+            # Multi-Timeframe"): si está habilitado, se intenta ADEMÁS la
+            # generación de señales vía las 4 estrategias del documento.
+            # Se respeta el mismo chequeo de señal activa (no abrir una
+            # segunda posición en el mismo activo, sea cual sea el origen).
+            if settings.STRATEGY_MODE_ENABLED and not self._has_active_signal(asset):
+                strategy_signals = await self.analyze_asset_via_strategies(asset)
+                new_signals.extend(strategy_signals)
 
         logger.info(
             f"[CICLO] Analizados {len(settings.ACTIVE_ASSETS)} activos -> "
@@ -605,15 +593,6 @@ class SignalEngine:
                 fvg_confluence=smc_info["fvg_confluence"],
                 liquidity_sweep=smc_info["liquidity_sweep"],
                 smc_quality=smc_info["smc_quality"],
-                # CAMBIO (a pedido explícito del usuario, 2026-07-25):
-                # "asegúrate que las operaciones sean realizadas através
-                # de una estrategia". El motor genérico de 18 indicadores
-                # de confluencia ES, en sí mismo, una estrategia -- se
-                # etiqueta explícitamente para que TODA señal (venga del
-                # motor genérico o de las 4 estrategias del documento)
-                # quede siempre atribuida a una estrategia identificable,
-                # sin excepción.
-                strategy="GENERIC_MULTI_INDICATOR",
                 # Habilita el cierre parcial real (TP1 50% + breakeven,
                 # TP2 25% + SL->TP1, TP3 cierra el resto) en position_monitor.py
                 initial_lot_size=lot_size,
