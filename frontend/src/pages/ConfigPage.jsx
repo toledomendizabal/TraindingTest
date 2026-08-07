@@ -6,7 +6,7 @@ function ConfigPage() {
   const [availableAssets, setAvailableAssets] = useState(null)
   const [capital, setCapital] = useState(10000)
   const [riskPct, setRiskPct] = useState(0.3)
-  const [minIndicators, setMinIndicators] = useState(6)
+  const [minIndicators, setMinIndicators] = useState(2)
   const [tradingMode, setTradingMode] = useState('offline')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -30,7 +30,7 @@ function ConfigPage() {
       const params = configRes.data.parameters || {}
       setCapital(params.initial_capital || 10000)
       setRiskPct(params.risk_percentage || 0.3)
-      setMinIndicators(params.min_indicators || 6)
+      setMinIndicators(params.min_indicators || 2)
     } catch (err) {
       console.error('Error fetching config:', err)
     } finally {
@@ -145,15 +145,20 @@ function ConfigPage() {
             />
           </div>
           <div>
-            <label className="block text-sm text-gray-400 mb-2">Mín. Indicadores para Señal</label>
+            <label className="block text-sm text-gray-400 mb-2">Mín. Estrategias para Señal (máx. 2 por activo)</label>
             <input
               type="number"
               min="1"
-              max="18"
+              max="2"
               value={minIndicators}
               onChange={(e) => setMinIndicators(e.target.value)}
               className="w-full bg-dark-400 border border-gray-700 rounded-lg px-4 py-2 text-white focus:border-primary-500 focus:outline-none"
             />
+            <p className="text-xs text-gray-500 mt-1">
+              2 = exige que ambas estrategias asignadas al activo confirmen la misma dirección (más selectivo).
+              1 = con una sola estrategia confirmada ya se activa la señal (más frecuente, menos selectivo).
+              Ver <a href="/docs" className="text-primary-400 hover:underline">Documentación de Estrategias</a>.
+            </p>
           </div>
         </div>
         <div className="mt-4 p-3 bg-dark-400 rounded-lg">

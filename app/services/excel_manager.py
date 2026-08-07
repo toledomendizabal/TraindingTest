@@ -63,6 +63,15 @@ class ExcelManager:
         # Reporte diario de KPIs (win rate, P/L neto, etc. por día), para
         # el calendario del dashboard y como archivo de referencia externo.
         self.daily_kpis_file = os.path.join(self.excel_dir, "daily_kpis.xlsx")
+        # CAMBIO (motor de estrategias): nuevo archivo, monitoreado por
+        # pending_signals_monitor.py, para señales donde solo 1 de las 2
+        # estrategias asignadas al activo confirmó. Cuando la segunda
+        # estrategia confirma la MISMA dirección dentro de la ventana de
+        # vigencia (settings.PENDING_SIGNALS_EXPIRY_MINUTES), la fila pasa
+        # a estado CONFIRMADA y se activa la señal real (Excel principal +
+        # MT5 si está habilitado). Si expira sin la segunda confirmación,
+        # pasa a EXPIRADA y no se activa.
+        self.pending_signals_file = os.path.join(self.excel_dir, "senales_por_confirmar.xlsx")
         self._ensure_files()
 
     def _ensure_files(self):
@@ -76,6 +85,23 @@ class ExcelManager:
         # Create config file
         if not os.path.exists(self.config_file):
             self._create_config_file()
+
+        # Create pending-confirmation signals file
+        if not os.path.exists(self.pending_signals_file):
+            self._create_pending_signals_file()
+
+    def _create_pending_signals_file(self):
+        """Crea el Excel de 'Señales por Confirmar' (estrategia parcial)."""
+        columns = [
+            "id", "asset", "direction",
+            "strategy_ids", "confirmed_ids", "pending_strategy_ids",
+            "entry_price_ref", "details",
+            "status",  # PENDIENTE | CONFIRMADA | EXPIRADA
+            "created_at", "expires_at", "resolved_at",
+        ]
+        df = pd.DataFrame(columns=columns)
+        df.to_excel(self.pending_signals_file, index=False, sheet_name="PorConfirmar")
+        logger.info(f"Created pending-confirmation signals file: {self.pending_signals_file}")
 
     def _create_signals_file(self):
         """Create the signals tracking Excel file."""
@@ -196,6 +222,89 @@ class ExcelManager:
 
         except Exception as e:
             logger.error(f"Error registering signal in Excel: {e}")
+            return False
+
+    # ------------------------------------------------------------------
+    # Señales "Por Confirmar" (motor de estrategias: 1 de 2 confirmó)
+    # ------------------------------------------------------------------
+    async def register_pending_signal(self, asset: str, direction: str, details: List[str],
+                                       strategy_ids: List[int], confirmed_ids: List[int],
+                                       entry_price_ref: float) -> bool:
+        """
+        Registra (o refresca) una señal 'por confirmar' en
+        senales_por_confirmar.xlsx. Si ya existe una fila PENDIENTE para el
+        mismo activo+dirección, se actualiza en lugar de duplicarse.
+        """
+        try:
+            import uuid as _uuid
+            from datetime import timedelta
+
+            df = pd.read_excel(self.pending_signals_file, sheet_name="PorConfirmar")
+
+            pending_ids = [sid for sid in strategy_ids if sid not in confirmed_ids]
+            now = datetime.now()
+            expires_at = now + timedelta(minutes=settings.PENDING_SIGNALS_EXPIRY_MINUTES)
+
+            existing_mask = (df["asset"] == asset) & (df["direction"] == direction) & (df["status"] == "PENDIENTE") if not df.empty else pd.Series([], dtype=bool)
+            if not df.empty and existing_mask.any():
+                idx = df[existing_mask].index[0]
+                df.at[idx, "confirmed_ids"] = str(confirmed_ids)
+                df.at[idx, "pending_strategy_ids"] = str(pending_ids)
+                df.at[idx, "details"] = " | ".join(details)
+                df.at[idx, "entry_price_ref"] = entry_price_ref
+            else:
+                new_row = {
+                    "id": str(_uuid.uuid4())[:8],
+                    "asset": asset,
+                    "direction": direction,
+                    "strategy_ids": str(strategy_ids),
+                    "confirmed_ids": str(confirmed_ids),
+                    "pending_strategy_ids": str(pending_ids),
+                    "entry_price_ref": entry_price_ref,
+                    "details": " | ".join(details),
+                    "status": "PENDIENTE",
+                    "created_at": now.isoformat(),
+                    "expires_at": expires_at.isoformat(),
+                    "resolved_at": "",
+                }
+                df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+
+            df.to_excel(self.pending_signals_file, index=False, sheet_name="PorConfirmar")
+            return True
+        except Exception as e:
+            logger.error(f"Error registering pending signal in Excel: {e}")
+            return False
+
+    def get_open_pending_signals(self) -> List[Dict]:
+        """Devuelve las filas con status == PENDIENTE (no expiradas todavía)."""
+        try:
+            df = pd.read_excel(self.pending_signals_file, sheet_name="PorConfirmar")
+            if df.empty:
+                return []
+            open_df = df[df["status"] == "PENDIENTE"]
+            return _sanitize_list(open_df.to_dict("records"))
+        except Exception as e:
+            logger.error(f"Error reading pending signals from Excel: {e}")
+            return []
+
+    def resolve_pending_signal(self, pending_id: str, new_status: str) -> bool:
+        """new_status: 'CONFIRMADA' o 'EXPIRADA'."""
+        try:
+            df = pd.read_excel(self.pending_signals_file, sheet_name="PorConfirmar")
+            mask = df["id"] == pending_id
+            if not mask.any():
+                return False
+            # CAMBIO: si la hoja estaba vacía, pandas infiere dtype float64
+            # para columnas de texto (todo NaN) -- asignar un string ahí
+            # lanza ValueError. Se fuerza dtype 'object' antes de escribir.
+            df["status"] = df["status"].astype("object")
+            df["resolved_at"] = df["resolved_at"].astype("object")
+            df.loc[mask, "status"] = new_status
+            df.loc[mask, "resolved_at"] = datetime.now().isoformat()
+            df.to_excel(self.pending_signals_file, index=False, sheet_name="PorConfirmar")
+            return True
+        except Exception as e:
+            logger.error(f"Error resolving pending signal in Excel: {e}")
             return False
 
     async def update_signal_status(self, signal_id: str, status: str,

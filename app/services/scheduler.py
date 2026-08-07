@@ -69,6 +69,18 @@ class SchedulerService:
             coalesce=True
         )
 
+        # CAMBIO (motor de estrategias): revisión de "Señales por Confirmar"
+        # (senales_por_confirmar.xlsx). Ver app/services/pending_signals_monitor.py.
+        self.scheduler.add_job(
+            self._check_pending_signals,
+            IntervalTrigger(seconds=settings.PENDING_SIGNALS_CHECK_INTERVAL_SECONDS),
+            id="pending_signals_check",
+            name="Pending Signals Check (Señales por Confirmar)",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True
+        )
+
         # KPIs diarios: se regenera daily_kpis.xlsx cada 15 minutos, para
         # que el día en curso se mantenga razonablemente al día en el
         # calendario del dashboard sin recalcular en cada request.
@@ -161,6 +173,14 @@ class SchedulerService:
             excel_manager._ensure_files()
         except Exception as e:
             logger.error(f"Error syncing Excel: {e}")
+
+    async def _check_pending_signals(self):
+        """Revisa senales_por_confirmar.xlsx y activa/expira según corresponda."""
+        try:
+            from app.services.pending_signals_monitor import check_pending_signals
+            await check_pending_signals()
+        except Exception as e:
+            logger.error(f"Error checking pending signals: {e}")
 
     async def _update_daily_kpis(self):
         """Regenera daily_kpis.xlsx con los KPIs (win rate, P/L neto, etc.) agrupados por día."""

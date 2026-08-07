@@ -9,6 +9,7 @@ import ConfigPage from './pages/ConfigPage'
 import LogsPage from './pages/LogsPage'
 import LoginPage from './pages/LoginPage'
 import ChartPage from './pages/ChartPage'
+import DocsPage from './pages/DocsPage'
 import { api } from './services/api'
 
 function App() {
@@ -86,6 +87,7 @@ function App() {
               <Route path="/config" element={<ConfigPage />} />
               <Route path="/logs" element={<LogsPage />} />
               <Route path="/charts" element={<ChartPage />} />
+              <Route path="/docs" element={<DocsPage />} />
               <Route path="/login" element={<LoginPage onLogin={handleLogin} />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>

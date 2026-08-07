@@ -47,7 +47,12 @@ class Signal(BaseModel):
     lot_size: float
     timeframe: str = "5m"
     indicators_met: int = 0
-    total_indicators: int = 18
+    # CAMBIO (motor de estrategias): antes era 18 (total de indicadores
+    # técnicos evaluados). Ahora representa cuántas estrategias SMC están
+    # asignadas al grupo de ese activo (normalmente 2, ver
+    # app/services/strategy_engine.py ASSET_GROUPS). Se pasa explícitamente
+    # desde signal_engine.py, este default solo aplica si no se especifica.
+    total_indicators: int = 2
     score: float = 0.0
     status: SignalStatus = SignalStatus.ACTIVE
     session: str = ""  # Tokyo, London, NewYork

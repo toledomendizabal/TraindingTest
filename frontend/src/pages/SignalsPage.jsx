@@ -139,7 +139,7 @@ function SignalsPage() {
                   <td className="py-2 px-3 text-right font-mono text-green-400">{signal.take_profit_2}</td>
                   <td className="py-2 px-3 text-right font-mono text-green-400">{signal.take_profit_3}</td>
                   <td className="py-2 px-3 text-right">{signal.lot_size}</td>
-                  <td className="py-2 px-3 text-right text-primary-400">{signal.indicators_met}/18</td>
+                  <td className="py-2 px-3 text-right text-primary-400">{signal.indicators_met}/{signal.total_indicators || 2}</td>
                   <td className="py-2 px-3 text-right">
                     <div className="flex flex-col items-end">
                       <span className="font-bold text-yellow-500">{signal.smc_quality || '1.0'}x</span>

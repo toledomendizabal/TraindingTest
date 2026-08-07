@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="es" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard Financiero y Estrategias de Trading</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        dark: {
+                            900: '#0f172a',
+                            950: '#020617',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+</head>
+<body class="bg-slate-950 text-slate-100 font-sans antialiased min-h-screen flex flex-col">
+
+    <!-- Encabezado / Navegación -->
+    <header class="bg-slate-900 border-b border-slate-800 sticky top-0 z-50">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+            <div class="flex items-center space-x-3">
+                <span class="text-xl font-bold tracking-wider text-blue-500">TradingMetrics AI</span>
+            </div>
+            <nav class="hidden md:flex space-x-6 text-sm font-medium text-slate-300">
+                <a href="#dashboard" class="hover:text-blue-400 transition-colors">Dashboard</a>
+                <a href="#analisis" class="hover:text-blue-400 transition-colors">Análisis de Mercado</a>
+                <a href="#estrategias" class="hover:text-blue-400 transition-colors text-blue-400">Matriz de Estrategias</a>
+            </nav>
+        </div>
+    </header>
+
+    <!-- Contenido Principal -->
+    <main class="flex-grow">
+        
+        <!-- Sección de Bienvenida / Dashboard Principal -->
+        <section id="dashboard" class="py-12 px-4 sm:px-6 lg:px-8 max-w-7xl mx-auto">
+            <div class="bg-slate-900 border border-slate-800 rounded-2xl p-6 sm:p-8 shadow-xl">
+                <h1 class="text-2xl sm:text-3xl font-extrabold text-white mb-4">Panel de Control General</h1>
+                <p class="text-slate-400 max-w-3xl">
+                    Bienvenido al sistema de análisis avanzado. Monitorea en tiempo real el comportamiento de los activos, las correlaciones macroeconómicas y las ejecuciones optimizadas por agentes inteligentes.
+                </p>
+                <!-- Tarjetas de Resumen Rápido de Ejemplo -->
+                <div class="grid grid-cols-1 sm:grid-cols-3 gap-6 mt-8">
+                    <div class="bg-slate-950 p-5 rounded-xl border border-slate-800">
+                        <span class="text-xs text-slate-400 uppercase tracking-wide">Activos Monitoreados</span>
+                        <p class="text-2xl font-bold text-white mt-1">24 Divisas, Índices y Metales</p>
+                    </div>
+                    <div class="bg-slate-950 p-5 rounded-xl border border-slate-800">
+                        <span class="text-xs text-slate-400 uppercase tracking-wide">Estado de Conexión</span>
+                        <p class="text-2xl font-bold text-emerald-400 mt-1">Activo / Estable</p>
+                    </div>
+                    <div class="bg-slate-950 p-5 rounded-xl border border-slate-800">
+                        <span class="text-xs text-slate-400 uppercase tracking-wide">Precisión de Modelo</span>
+                        <p class="text-2xl font-bold text-blue-400 mt-1">94.2%</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- SECCIÓN ESPECIAL: Matriz de Estrategias y Activos Financieros -->
+        <section id="estrategias" class="py-12 bg-slate-900/50 border-t border-b border-slate-800/80 px-4 sm:px-6 lg:px-8">
+            <div class="max-w-7xl mx-auto">
+                
+                <!-- Encabezado de la Sección -->
+                <div class="text-center mb-10">
+                    <h2 class="text-3xl font-extrabold tracking-tight sm:text-4xl text-white">
+                        Matriz de Estrategias y Activos Financieros
+                    </h2>
+                    <p class="mt-3 text-lg text-slate-400 max-w-2xl mx-auto">
+                        Optimización de rendimiento basada en los 24 pares de divisas, índices principales (incluyendo Dow Jones) y metales.
+                    </p>
+                </div>
+
+                <!-- Contenedor de la Tabla con Scroll Responsivo -->
+                <div class="overflow-x-auto shadow-2xl rounded-xl border border-slate-800 bg-slate-950">
+                    <table class="min-w-full divide-y divide-slate-800 text-left text-sm">
+                        <thead class="bg-slate-900 text-slate-300 uppercase tracking-wider text-xs">
+                            <tr>
+                                <th scope="col" class="px-6 py-4 font-semibold">Tipo de Activo</th>
+                                <th scope="col" class="px-6 py-4 font-semibold">Activos Específicos</th>
+                                <th scope="col" class="px-6 py-4 font-semibold">Estrategias Óptimas (Hasta 2)</th>
+                                <th scope="col" class="px-6 py-4 font-semibold">Por qué es benéfica (Objetivo)</th>
+                                <th scope="col" class="px-6 py-4 font-semibold">Activos / Herramientas de Complemento</th>
+                                <th scope="col" class="px-6 py-4 font-semibold">Objetivo de la Complementariedad</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-slate-800 text-slate-300">
+                            
+                            <!-- Fila 1: Divisas Principales (Majors) -->
+                            <tr class="hover:bg-slate-900/50 transition-colors">
+                                <td class="px-6 py-4 font-medium text-white">Divisas (Forex Majors)</td>
+                                <td class="px-6 py-4 font-semibold text-blue-400">EURUSD, GBPUSD, USDCHF, NZDUSD</td>
+                                <td class="px-6 py-4">1. Day Trading / Reversión a la Media<br>2. Breakout / Rupturas de Rango</td>
+                                <td class="px-6 py-4 text-slate-400">Aprovechan la alta liquidez y spreads ajustados durante cruces de sesiones globales y publicaciones macroeconómicas de alto impacto.</td>
+                                <td class="px-6 py-4 text-amber-400">DXY, Bonos del Tesoro a 10 años</td>
+                                <td class="px-6 py-4 text-slate-400">El DXY actúa como filtro direccional macro; los bonos complementan la lectura de tasas de interés relativas.</td>
+                            </tr>
+
+                            <!-- Fila 2: Divisas con Yen y Commodities -->
+                            <tr class="hover:bg-slate-900/50 transition-colors">
+                                <td class="px-6 py-4 font-medium text-white">Divisas (Yen & Commodity)</td>
+                                <td class="px-6 py-4 font-semibold text-blue-400">USDJPY, AUDUSD, USDCAD</td>
+                                <td class="px-6 py-4">1. Seguimiento de Tendencia (Trend Following)<br>2. Carry Trading / News-based</td>
+                                <td class="px-6 py-4 text-slate-400">Las políticas de bancos centrales y la correlación con materias primas generan impulsos direccionales sostenibles a medio plazo.</td>
+                                <td class="px-6 py-4 text-amber-400">Nikkei 225, WTI, BRENT</td>
+                                <td class="px-6 py-4 text-slate-400">Sincronizan el apetito por el riesgo global en Asia y los ingresos por exportación de crudo y recursos.</td>
+                            </tr>
+
+                            <!-- Fila 3: Divisas Cruces (Crosses) -->
+                            <tr class="hover:bg-slate-900/50 transition-colors">
+                                <td class="px-6 py-4 font-medium text-white">Divisas (Cruces / Minors)</td>
+                                <td class="px-6 py-4 font-semibold text-blue-400">EURGBP, EURJPY, EURCHF, GBPJPY, CHFJPY, AUDJPY, CADJPY, NZDJPY, AUDNZD, AUDCHF, GBPCHF, CADCHF</td>
+                                <td class="px-6 py-4">1. Trading en Rango / Sesión Europea<br>2. Swing Trading Estacional</td>
+                                <td class="px-6 py-4 text-slate-400">Explotan desequilibrios económicos regionales específicos y flujos de capital cruzados fuera del horario estricto de EE. UU.</td>
+                                <td class="px-6 py-4 text-amber-400">DAX40, STOXX50, EURUSD</td>
+                                <td class="px-6 py-4 text-slate-400">Permiten aislar la fortaleza o debilidad intrínseca del bloque europeo frente a otras economías desarrolladas.</td>
+                            </tr>
+
+                            <!-- Fila 4: Índices Bursátiles Globales (Incluye Dow Jones) -->
+                            <tr class="hover:bg-slate-900/50 transition-colors">
+                                <td class="px-6 py-4 font-medium text-white">Índices Bursátiles</td>
+                                <td class="px-6 py-4 font-semibold text-blue-400">DJ30 (Dow Jones), SPX500, NDX100, DAX40, STOXX50</td>
+                                <td class="px-6 py-4">1. Swing Trading / Momentum Alcista<br>2. Trading en Rango / Apertura de Sesión</td>
+                                <td class="px-6 py-4 text-slate-400">Los mercados de renta variable capitalizan tanto los sesgos alcistas institucionales como la volatilidad matutina de apertura.</td>
+                                <td class="px-6 py-4 text-amber-400">VIX, XAUUSD, Bund Alemán</td>
+                                <td class="px-6 py-4 text-slate-400">El VIX mide el sentimiento de miedo para coberturas de cartera; el oro actúa como escudo ante correcciones bursátiles.</td>
+                            </tr>
+
+                            <!-- Fila 5: Metales Preciosos e Industriales -->
+                            <tr class="hover:bg-slate-900/50 transition-colors">
+                                <td class="px-6 py-4 font-medium text-white">Materias Primas y Metales</td>
+                                <td class="px-6 py-4 font-semibold text-blue-400">XAUUSD, WTI, BRENT, COPPER</td>
+                                <td class="px-6 py-4">1. Trading de Cobertura (Hedging) / Reversión a la Media<br>2. Seguimiento de Tendencia Macroeconómica</td>
+                                <td class="px-6 py-4 text-slate-400">Actúan como refugio ante la inflación o reflejan de forma directa la salud del ciclo industrial y la demanda global.</td>
+                                <td class="px-6 py-4 text-amber-400">DXY, TIPS, AUDUSD</td>
+                                <td class="px-6 py-4 text-slate-400">Mantienen una correlación inversa con el dólar e intereses reales, alineándose con las monedas vinculadas a materias primas.</td>
+                            </tr>
+
+                        </tbody>
+                    </table>
+                </div>
+
+            </div>
+        </section>
+
+    </main>
+
+    <!-- Pie de Página (Footer) -->
+    <footer class="bg-slate-900 border-t border-slate-800 text-slate-400 py-6 text-center text-sm">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <p>&copy; 2026 TradingMetrics AI. Todos los derechos reservados. Arquitectura de sistemas orientada al rendimiento.</p>
+        </div>
+    </footer>
+
+</body>
+</html>

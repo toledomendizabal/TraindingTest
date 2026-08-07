@@ -142,49 +142,73 @@ class Settings(BaseSettings):
     TP3_CLOSE_PCT: float = 20.0
 
     # Active Assets
-    # CAMBIO (análisis de win rate, datos reales 2026-07-07): USDJPY excluido
-    # temporalmente. Fue el peor activo en las 3 sesiones sin excepción
-    # (25% WR Londres, 10% NY, 20% Tokyo, sobre 27 señales), con evidencia de
-    # que el sistema generó señales SELL contra una tendencia real de
-    # fortalecimiento del USD (contexto: demanda de refugio por conflicto en
-    # Medio Oriente, USDJPY cerca de máximos de 40 años esa semana). Ver
-    # también el nuevo filtro de tendencia macro (_validate_macro_trend) que
-    # apunta a la causa de fondo; si ese filtro demuestra ser efectivo en
-    # producción, USDJPY puede reincorporarse.
-    #
-    # CAMBIO (análisis de win rate, datos reales 2026-07-22): USDCHF y
-    # USDCAD también excluidos. Con 375 trades reales (2026-07-16 al 21,
-    # ya con el filtro de tendencia macro activo), ambos siguen en números
-    # rojos de forma consistente:
+    # HISTORIAL (mantenido por trazabilidad, ya NO aplica tal cual):
+    # el motor anterior (basado en 18 indicadores) había excluido USDJPY,
+    # USDCHF y USDCAD de ACTIVE_ASSETS por bajo win rate real:
+    #   USDJPY: peor activo en las 3 sesiones (10-25% WR)
     #   USDCHF: n=47, 42.6% WR, P/L -$225.30
     #   USDCAD: n=43, 37.2% WR, P/L -$176.40
-    # Mientras que los pares donde USD es la divisa COTIZADA (no la base)
-    # rinden mejor en el mismo período: EURUSD +$265, AUDUSD +$97, GBPUSD
-    # +$67. Con USDJPY, USDCHF y USDCAD ahora fuera, el patrón es
-    # consistente: los 3 pares donde USD es la divisa BASE han rendido mal
-    # en distintas ventanas de datos, sugiriendo que el filtro de tendencia
-    # macro actual no está corrigiendo del todo el problema para ese tipo
-    # de par específicamente. Si se investiga y corrige la causa de fondo,
-    # ambos pueden reincorporarse.
+    # CAMBIO (migración a motor de estrategias, a pedido explícito del
+    # usuario): se reincorporan estos 3 pares porque ahora son señales
+    # generadas por ESTRATEGIAS SMC específicas por grupo (ver
+    # app/services/strategy_engine.py), no por el mismo conteo de
+    # indicadores que produjo esos números. Aun así, ES RECOMENDABLE volver
+    # a medir el win rate real de USDJPY/USDCHF/USDCAD específicamente
+    # bajo el nuevo motor antes de asumir que el problema de fondo (USD
+    # como divisa BASE) ya no aplica -- el filtro de tendencia macro
+    # (_validate_macro_trend) sigue activo y sin cambios.
+    #
+    # CAMBIO (a pedido del usuario): ACTIVE_ASSETS ahora es el listado
+    # COMPLETO de "Tablas_de_aplicacion.html" (28 activos: 19 pares de
+    # divisas + 5 índices + 4 metales/materias primas). La tarjeta de
+    # resumen del dashboard adjunto decía "24 Divisas, Índices y Metales",
+    # pero la tabla en sí enumera 28 activos distintos -- se usó el
+    # listado explícito de la tabla (más específico) como fuente de
+    # verdad. Si en realidad son 24, dime cuáles 4 quitar.
     ACTIVE_ASSETS: List[str] = [
-        "EURUSD", "GBPUSD",
-        "NZDUSD", "AUDUSD", "XAUUSD",
-        "US30Cash", "US100Cash", "US500Cash", "GER40Cash"
+        # --- Divisas: Majors (Fila 1) ---
+        "EURUSD", "GBPUSD", "USDCHF", "NZDUSD",
+        # --- Divisas: Yen & Commodity (Fila 2) ---
+        "USDJPY", "AUDUSD", "USDCAD",
+        # --- Divisas: Cruces / Minors (Fila 3) ---
+        "EURGBP", "EURJPY", "EURCHF", "GBPJPY", "CHFJPY", "AUDJPY",
+        "CADJPY", "NZDJPY", "AUDNZD", "AUDCHF", "GBPCHF", "CADCHF",
+        # --- Índices Bursátiles (Fila 4) ---
+        "US30Cash", "US500Cash", "US100Cash", "GER40Cash", "STOXX50Cash",
+        # --- Materias Primas y Metales (Fila 5) ---
+        "XAUUSD", "WTI", "BRENT", "COPPER",
     ]
 
-    # Available Assets (full list)
+    # Available Assets (full list) -- ampliado para incluir todos los pares
+    # de la tabla, incluso los que no estén en ACTIVE_ASSETS por ahora.
     AVAILABLE_FOREX: List[str] = [
-        "EURUSD", "GBPUSD", "USDJPY", "USDCHF",
-        "USDCAD", "NZDUSD", "AUDUSD", "EURGBP",
-        "EURJPY", "GBPJPY", "AUDCAD", "AUDNZD"
+        "EURUSD", "GBPUSD", "USDJPY", "USDCHF", "USDCAD", "NZDUSD", "AUDUSD",
+        "EURGBP", "EURJPY", "EURCHF", "GBPJPY", "CHFJPY", "AUDJPY", "CADJPY",
+        "NZDJPY", "AUDNZD", "AUDCHF", "GBPCHF", "CADCHF",
     ]
     AVAILABLE_COMMODITIES: List[str] = [
-        "XAUUSD", "XAGUSD", "USOIL", "UKOIL"
+        "XAUUSD", "XAGUSD", "WTI", "BRENT", "COPPER", "USOIL", "UKOIL"
     ]
     AVAILABLE_INDICES: List[str] = [
-        "US30Cash", "US100Cash", "US500Cash", "GER40Cash",
+        "US30Cash", "US100Cash", "US500Cash", "GER40Cash", "STOXX50Cash",
         "UK100Cash", "JP225Cash", "AU200Cash"
     ]
+
+    # --- Activos de COMPLEMENTO (filtro/confirmación macro, columna final
+    # de la tabla) -- normalmente NO se operan directamente, se usan solo
+    # como contexto (ej. DXY para dirección del dólar, VIX para sentimiento
+    # de riesgo). Disponibilidad real depende de tu proveedor de datos
+    # (Twelve Data) y de si tu bróker los ofrece como símbolo operable.
+    COMPLEMENTARY_ASSETS: List[str] = [
+        "DXY", "US10Y", "JP225", "WTI", "BRENT", "GER40Cash", "STOXX50Cash",
+        "EURUSD", "VIX", "XAUUSD", "BUND", "TIPS", "AUDUSD",
+    ]
+
+
+    # --- Señales "Por Confirmar" (estrategia parcial: 1 de 2 confirmó) ---
+    # Ver excel_manager.register_pending_signal / pending_signals_monitor.py.
+    PENDING_SIGNALS_EXPIRY_MINUTES: int = int(os.getenv("PENDING_SIGNALS_EXPIRY_MINUTES", "60"))
+    PENDING_SIGNALS_CHECK_INTERVAL_SECONDS: int = int(os.getenv("PENDING_SIGNALS_CHECK_INTERVAL_SECONDS", "60"))
 
     class Config:
         env_file = ".env"

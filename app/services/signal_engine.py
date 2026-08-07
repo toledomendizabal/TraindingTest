@@ -1,4 +1,13 @@
-"""Signal engine for technical analysis and signal generation."""
+"""Signal engine for strategy-based signal generation.
+
+CAMBIO (migración indicadores -> estrategias, ver app/services/strategy_engine.py):
+la generación de señales ya NO cuenta votos de 18 indicadores técnicos.
+Ahora usa `strategy_engine`, que evalúa únicamente las (hasta 2) estrategias
+SMC/ICT asignadas al grupo de activo correspondiente (ver ASSET_GROUPS en
+strategy_engine.py, tomado de la documentación adjunta). El resto del
+pipeline (spread, sesión, volatilidad, validación estructural, tendencia
+macro, registro en Excel, ejecución MT5) NO CAMBIA.
+"""
 import asyncio
 import uuid
 import pandas as pd
@@ -9,6 +18,7 @@ from loguru import logger
 from app.models.signal import Signal, SignalDirection, SignalStatus
 from app.services.market_data import market_data_service
 from app.services.indicators import indicator_service
+from app.services.strategy_engine import strategy_engine, get_strategies_for_asset
 from app.services.excel_manager import excel_manager
 from app.services.mt5_executor import mt5_executor
 from app.models.asset import Asset
@@ -16,34 +26,28 @@ from app.core.config import settings
 
 
 class SignalEngine:
-    """Engine for generating trading signals based on technical indicators."""
+    """Engine for generating trading signals based on the strategies assigned to each asset group."""
 
     # Default constants (can be overridden by Excel)
-    # CAMBIO (a pedido del usuario, 2026-07-02): bajado de 6 a 5 para más
-    # frecuencia de señales, a cambio de un poco menos de selectividad.
-    # En el ciclo de referencia (18:20 UTC), esto habría permitido 2 señales
-    # adicionales (EURUSD 5/6, USDCAD 5/6) que quedaron a un indicador del
-    # umbral anterior.
-    # CAMBIO (análisis de datos reales, 2026-07-22): revertido de 7 a 6.
-    # La recomendación anterior (subir de 5 a 7, comentario previo) se basó
-    # en una SIMULACIÓN retroactiva sobre datos viejos del 2026-07-07. Con
-    # 375 trades REALES del 2026-07-16 al 21 -- generados con
-    # min_indicators=6 (el valor que de hecho seguía activo en Excel, que
-    # tiene prioridad sobre este default de clase) -- los datos muestran lo
-    # contrario a lo estimado:
-    #   indicators_met=6: n=200, 51.0% WR, P/L +$1,032.69
-    #   indicators_met=7: n=161, 41.0% WR, P/L   -$465.78
-    #   indicators_met=8: n=14,  42.9% WR, P/L     +$79.00
-    # Exigir más indicadores no mejoró el resultado en este período; de
-    # hecho, 6 fue claramente el mejor. Se prioriza la evidencia real más
-    # reciente sobre la simulación anterior. Si datos futuros muestran lo
-    # contrario, vale la pena volver a probar 7.
-    MIN_INDICATORS_FOR_SIGNAL = 6
+    # CAMBIO (migración a estrategias): cada activo tiene HASTA 2 estrategias
+    # asignadas (ver strategy_engine.ASSET_GROUPS), así que el máximo teórico
+    # de "votos" ya no es 18 sino 2. MIN_STRATEGIES_FOR_SIGNAL=2 significa
+    # "las 2 estrategias asignadas deben confirmar la MISMA dirección" para
+    # disparar una señal de inmediato (máxima selectividad). Si solo 1 de
+    # las 2 confirma, la señal NO se descarta: pasa al Excel de "Señales por
+    # Confirmar" (ver excel_manager.register_pending_signal /
+    # pending_signals_monitor.py) y se activa sola en cuanto la segunda
+    # estrategia confirme la misma dirección dentro de la ventana de
+    # vigencia configurada.
+    # Se mantiene la clave "min_indicators" en el Excel de configuración por
+    # compatibilidad (para no romper hojas ya existentes/scripts externos),
+    # pero ahora se interpreta como "min_strategies".
+    MIN_STRATEGIES_FOR_SIGNAL = 2
     SIGNAL_TIMEFRAME = "5m"
 
     def __init__(self):
         self.active_signals: Dict[str, Signal] = {}
-        self.min_indicators = self.MIN_INDICATORS_FOR_SIGNAL
+        self.min_strategies = self.MIN_STRATEGIES_FOR_SIGNAL
         self.signal_timeframe = self.SIGNAL_TIMEFRAME
         self._load_config_from_excel()
         self._load_active_signals()
@@ -53,9 +57,9 @@ class SignalEngine:
         try:
             config = excel_manager.get_config()
             params = config.get("parameters", {})
-            self.min_indicators = int(params.get("min_indicators", self.MIN_INDICATORS_FOR_SIGNAL))
+            self.min_strategies = int(params.get("min_indicators", self.MIN_STRATEGIES_FOR_SIGNAL))
             self.signal_timeframe = str(params.get("signal_timeframe", self.SIGNAL_TIMEFRAME))
-            logger.info(f"Configuration loaded from Excel: Min Indicators={self.min_indicators}, Timeframe={self.signal_timeframe}")
+            logger.info(f"Configuration loaded from Excel: Min Strategies={self.min_strategies}, Timeframe={self.signal_timeframe}")
         except Exception as e:
             logger.error(f"Error loading configuration from Excel: {e}")
 
@@ -130,16 +134,36 @@ class SignalEngine:
                 logger.debug(f"[DEBUG] Skipping {asset}: Spread too high ({current_spread_pips} pips).")
                 return None
 
-            indicators = indicator_service.calculate_all(df)
-            if not indicators:
-                logger.info(f"[REJECT] {asset}: no se pudieron calcular indicadores (datos insuficientes).")
+            # CAMBIO (migración indicadores -> estrategias): en vez de contar
+            # votos de 18 indicadores, se evalúan SOLO las (hasta 2)
+            # estrategias SMC asignadas al grupo de este activo.
+            direction, indicators_met, details, strat_extra = strategy_engine.evaluate(asset, df)
+
+            if direction == "NEUTRAL":
+                logger.info(f"[REJECT] {asset}: ninguna estrategia asignada ({strat_extra.get('strategy_ids')}) confirmó dirección.")
                 return None
 
-            direction, indicators_met, details = indicator_service.evaluate_signals(df, indicators)
-
-            # Fix "dejó de mandar señales": Usamos la configuración dinámica de Excel
-            if direction == "NEUTRAL" or indicators_met < self.min_indicators:
-                logger.info(f"[REJECT] {asset}: dirección NEUTRAL o indicadores insuficientes ({indicators_met}/{self.min_indicators}).")
+            if indicators_met < self.min_strategies:
+                if strat_extra.get("pending"):
+                    # Una de las 2 estrategias confirmó, la otra todavía no:
+                    # se registra como "pendiente de confirmación" en el
+                    # Excel dedicado en vez de descartarse. El monitor
+                    # (pending_signals_monitor.py) revisa periódicamente si
+                    # la estrategia restante confirma la MISMA dirección
+                    # antes de que expire, y si es así llama de nuevo a
+                    # analyze_asset() para que la señal se active normalmente.
+                    await excel_manager.register_pending_signal(
+                        asset=asset, direction=direction, details=details,
+                        strategy_ids=strat_extra.get("strategy_ids", []),
+                        confirmed_ids=strat_extra.get("confirmed_ids", []),
+                        entry_price_ref=float(df["close"].iloc[-1]),
+                    )
+                    logger.info(
+                        f"[PENDIENTE] {asset}: {direction} con {indicators_met}/{self.min_strategies} "
+                        f"estrategias confirmadas -- registrado en Excel de señales por confirmar."
+                    )
+                else:
+                    logger.info(f"[REJECT] {asset}: dirección {direction} con solo {indicators_met}/{self.min_strategies} estrategias confirmadas.")
                 return None
 
             # Session Filter: Londres/Nueva York
@@ -205,26 +229,18 @@ class SignalEngine:
                 logger.info(f"Signal for {asset} rejected: Failed macro (daily) trend validation.")
                 return None
 
-            # CAMBIO (análisis de win rate, datos reales 2026-07-07):
-            # liquidity_sweep mostró una diferencia real de win rate (45.6%
-            # con liquidity_sweep=True vs 36.0% sin él, sobre 207 señales) --
-            # a diferencia de fvg_confluence, que antes de corregirse su bug
-            # (ver commit c318ec4) era siempre True y no discriminaba nada.
-            # Para aprovechar esa señal real sin bloquear señales ya fuertes,
-            # se exige fvg_confluence o liquidity_sweep SOLO como
-            # confirmación adicional en señales "límite" (indicators_met
-            # exactamente igual al mínimo configurado) -- las señales con
-            # más indicadores confirmando no se ven afectadas.
+            # CAMBIO (migración a estrategias): con el motor de estrategias,
+            # llegar hasta aquí YA implica que las 2 estrategias asignadas al
+            # activo confirmaron la misma dirección (self.min_strategies=2,
+            # el máximo posible) -- ya no existe el concepto de "señal
+            # límite" que exigía FVG/liquidez como confirmación EXTRA. Se
+            # conserva el cálculo de `smc_info` únicamente como telemetría
+            # (se guarda en Excel: fvg_confluence, liquidity_sweep,
+            # smc_quality) para análisis posterior, pero ya no bloquea la señal.
             smc_info = self._assess_smc_confluence(direction, float(df["close"].iloc[-1]), df)
-            if indicators_met == self.min_indicators and not (smc_info["fvg_confluence"] or smc_info["liquidity_sweep"]):
-                logger.info(
-                    f"[REJECT] {asset}: señal límite ({indicators_met}/{self.min_indicators}) "
-                    f"sin confluencia SMC (ni FVG ni barrido de liquidez)."
-                )
-                return None
 
             # If all checks pass, create the signal
-            signal = self._create_signal(asset, direction, df, indicators_met, smc_info=smc_info)
+            signal = self._create_signal(asset, direction, df, indicators_met, smc_info=smc_info, strategy_details=details)
             if signal:
                 self.active_signals[signal.id] = signal
 
@@ -363,7 +379,7 @@ class SignalEngine:
             "smc_quality": round(smc_quality, 2)
         }
 
-    def _create_signal(self, asset: str, direction: str, df: pd.DataFrame, indicators_met: int, smc_info: Optional[dict] = None) -> Optional[Signal]:
+    def _create_signal(self, asset: str, direction: str, df: pd.DataFrame, indicators_met: int, smc_info: Optional[dict] = None, strategy_details: Optional[List[str]] = None) -> Optional[Signal]:
         """Create a new signal object with risk management parameters."""
         try:
             current_price = df["close"].iloc[-1]
@@ -466,7 +482,9 @@ class SignalEngine:
                 lot_size=lot_size,
                 timeframe=self.signal_timeframe,
                 indicators_met=indicators_met,
-                score=float(indicators_met / 18.0), # Normalized score
+                total_indicators=max(len(get_strategies_for_asset(asset)), 1),
+                score=float(indicators_met / max(len(get_strategies_for_asset(asset)), 1)),  # Normalized score (0-1: proporción de estrategias asignadas que confirmaron)
+                indicators_detail=strategy_details or [],
                 session=market_data_service.get_current_session(),
                 # CAMBIO CRÍTICO (causa raíz real de "sigue sin enviar
                 # señales"): aquí se pasaba `datetime.utcnow().hour` (un int,

@@ -8,6 +8,7 @@ const menuItems = [
   { path: '/config', label: 'Configuración', icon: '⚙️' },
   { path: '/charts', label: 'Gráficos', icon: '🕯️' },
   { path: '/logs', label: 'Logs', icon: '📋' },
+  { path: '/docs', label: 'Documentación', icon: '📚' },
 ]
 
 function Sidebar({ isOpen, onToggle }) {
