@@ -69,12 +69,14 @@ async def check_pending_signals():
 
         new_direction, strategies_confirmed, details, extra = strategy_engine.evaluate(asset, df)
 
-        if new_direction == direction and strategies_confirmed >= 2:
+        # Import diferido para evitar import circular (signal_engine importa excel_manager).
+        from app.services.signal_engine import signal_engine
+        min_strategies = getattr(signal_engine, "min_strategies", 2)
+
+        if new_direction == direction and strategies_confirmed >= min_strategies:
             excel_manager.resolve_pending_signal(pending_id, "CONFIRMADA")
             confirmed += 1
             logger.info(f"[PENDIENTE->CONFIRMADA] {asset} {direction} (id={pending_id}): segunda estrategia confirmó. Generando señal real...")
-            # Import diferido para evitar import circular (signal_engine importa excel_manager).
-            from app.services.signal_engine import signal_engine
             await signal_engine.analyze_asset(asset)
         elif new_direction not in (direction, "NEUTRAL"):
             # La dirección se invirtió por completo: ya no tiene sentido

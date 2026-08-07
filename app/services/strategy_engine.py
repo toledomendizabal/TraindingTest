@@ -589,6 +589,19 @@ STRATEGY_FUNCS = {
     18: _strategy_18_dynamic_sr,
 }
 
+# CAMBIO (fix crítico, 2026-08-07): número MÁXIMO de estrategias asignadas a
+# CUALQUIER grupo de activo (actualmente 2 en todos los grupos, ver
+# ASSET_GROUPS arriba). signal_engine.py usa esta constante para no permitir
+# nunca un `min_strategies` mayor a este valor -- un valor más alto (ej. el
+# antiguo `min_indicators=6` que quedó guardado en trading_config.xlsx de la
+# versión con 18 indicadores) haría que NINGUNA señal pudiera dispararse
+# jamás, porque no hay forma de reunir 6 confirmaciones cuando el máximo
+# posible es 2. Esto fue precisamente el bug que impidió que el sistema
+# generara señales tras la migración: el Excel de configuración conservó el
+# valor viejo (6) y signal_engine lo cargó sin validarlo contra el nuevo
+# máximo real de estrategias por activo.
+MAX_STRATEGIES_PER_ASSET = max(len(g["strategies"]) for g in ASSET_GROUPS.values())
+
 
 class StrategyEngine:
     """Evalúa, para un activo dado, únicamente las estrategias óptimas asignadas a su grupo."""

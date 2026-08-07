@@ -18,7 +18,7 @@ from loguru import logger
 from app.models.signal import Signal, SignalDirection, SignalStatus
 from app.services.market_data import market_data_service
 from app.services.indicators import indicator_service
-from app.services.strategy_engine import strategy_engine, get_strategies_for_asset
+from app.services.strategy_engine import strategy_engine, get_strategies_for_asset, MAX_STRATEGIES_PER_ASSET
 from app.services.excel_manager import excel_manager
 from app.services.mt5_executor import mt5_executor
 from app.models.asset import Asset
@@ -59,6 +59,25 @@ class SignalEngine:
             params = config.get("parameters", {})
             self.min_strategies = int(params.get("min_indicators", self.MIN_STRATEGIES_FOR_SIGNAL))
             self.signal_timeframe = str(params.get("signal_timeframe", self.SIGNAL_TIMEFRAME))
+            # CAMBIO (fix crítico, 2026-08-07): auto-corrección de un valor
+            # heredado del motor de INDICADORES (típicamente 6) que quedó
+            # guardado en trading_config.xlsx antes de la migración. Con el
+            # motor de estrategias, el máximo real de confirmaciones
+            # posibles por activo es MAX_STRATEGIES_PER_ASSET (2 hoy). Un
+            # min_strategies mayor a eso es matemáticamente imposible de
+            # cumplir y bloquea TODAS las señales para siempre, en silencio
+            # (esto fue exactamente lo que pasó: 0 señales generadas en
+            # signals_tracking.xlsx durante todo el día, con 199 señales
+            # "por confirmar" expirando sin poder llegar nunca a 6/6).
+            if self.min_strategies > MAX_STRATEGIES_PER_ASSET or self.min_strategies < 1:
+                logger.warning(
+                    f"min_indicators={self.min_strategies} leído de Excel es inválido para el "
+                    f"motor de estrategias (máximo posible por activo = {MAX_STRATEGIES_PER_ASSET}). "
+                    f"Se corrige automáticamente a {MAX_STRATEGIES_PER_ASSET} para no bloquear todas "
+                    f"las señales. Si prefieres menos selectividad, ajústalo desde la página de "
+                    f"Configuración del dashboard (valor válido: 1 a {MAX_STRATEGIES_PER_ASSET})."
+                )
+                self.min_strategies = MAX_STRATEGIES_PER_ASSET
             logger.info(f"Configuration loaded from Excel: Min Strategies={self.min_strategies}, Timeframe={self.signal_timeframe}")
         except Exception as e:
             logger.error(f"Error loading configuration from Excel: {e}")

@@ -145,7 +145,7 @@ class ExcelManager:
         # Trading parameters
         params_data = {
             "parameter": ["initial_capital", "risk_percentage", "min_indicators", "signal_timeframe"],
-            "value": [settings.INITIAL_CAPITAL, settings.RISK_PERCENTAGE, 6, "5m"]
+            "value": [settings.INITIAL_CAPITAL, settings.RISK_PERCENTAGE, 2, "5m"]  # CAMBIO: min_indicators ahora representa min_strategies (máx. 2 por activo, ver strategy_engine.MAX_STRATEGIES_PER_ASSET)
         }
         params_df = pd.DataFrame(params_data)
 
@@ -491,7 +491,7 @@ class ExcelManager:
                 result["parameters"] = {
                     "initial_capital": settings.INITIAL_CAPITAL,
                     "risk_percentage": settings.RISK_PERCENTAGE,
-                    "min_indicators": 6,
+                    "min_indicators": 2,  # CAMBIO: min_strategies (máx. 2 por activo)
                     "signal_timeframe": "5m"
                 }
 
@@ -518,7 +518,7 @@ class ExcelManager:
                 "parameters": {
                     "initial_capital": settings.INITIAL_CAPITAL,
                     "risk_percentage": settings.RISK_PERCENTAGE,
-                    "min_indicators": 6,
+                    "min_indicators": 2,  # CAMBIO: min_strategies (máx. 2 por activo)
                     "signal_timeframe": "5m"
                 },
                 "indicators": []
@@ -558,7 +558,7 @@ class ExcelManager:
                 params = [
                     {"parameter": "initial_capital", "value": settings.INITIAL_CAPITAL},
                     {"parameter": "risk_percentage", "value": settings.RISK_PERCENTAGE},
-                    {"parameter": "min_indicators", "value": 6},
+                    {"parameter": "min_indicators", "value": 2},  # CAMBIO: min_strategies (máx. 2 por activo)
                     {"parameter": "signal_timeframe", "value": "5m"}
                 ]
                 sheets_to_write["Parameters"] = pd.DataFrame(params)

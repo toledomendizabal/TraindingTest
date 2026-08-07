@@ -210,6 +210,18 @@ class Settings(BaseSettings):
     PENDING_SIGNALS_EXPIRY_MINUTES: int = int(os.getenv("PENDING_SIGNALS_EXPIRY_MINUTES", "60"))
     PENDING_SIGNALS_CHECK_INTERVAL_SECONDS: int = int(os.getenv("PENDING_SIGNALS_CHECK_INTERVAL_SECONDS", "60"))
 
+    # --- Alias de símbolo por bróker (archivos MT4/MT5) ---
+    # CAMBIO (fix, 2026-08-07): algunos brokers usan nombres distintos para
+    # índices/materias primas (ej. "STOXX50" en vez de "STOXX50Cash", o
+    # "USOUSD"/"XTIUSD" en vez de "WTI"). Si tras agregar el símbolo a
+    # Market Watch en tu terminal MT5 el archivo `history_<broker>.csv`
+    # sigue sin encontrarse con el nombre "limpio" por defecto, agrega
+    # aquí el nombre EXACTO que usa tu bróker (tal como aparece en Market
+    # Watch) y `market_data.py` lo probará primero.
+    # Ejemplo: {"WTI": "USOUSD", "BRENT": "UKOUSD", "COPPER": "XCUUSD",
+    #           "STOXX50Cash": "STOXX50"}
+    MT_SYMBOL_ALIASES: dict = {}
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

@@ -17,6 +17,19 @@ class MarketDataService:
     BASE_URL = "https://api.twelvedata.com"
 
     # Symbol mapping for Twelve Data
+    # CAMBIO (fix, 2026-08-07): se agregaron los 19 activos nuevos de la
+    # migración a estrategias (12 cruces + STOXX50Cash + WTI/BRENT/COPPER).
+    # Sin esta entrada, `_get_symbol()` devolvía el símbolo tal cual (ej.
+    # "EURGBP" en vez de "EUR/GBP"), Twelve Data no lo reconocía, y
+    # get_time_series() fallaba en silencio para los 19 -> "sin datos
+    # históricos" en el 100% de los ciclos (confirmado con los logs reales
+    # del 2026-08-07: 103/103 ciclos fallidos para cada uno de estos 19).
+    # OJO: WTI, BRENT, COPPER y los índices dependen del plan de Twelve
+    # Data contratado (el plan gratuito no siempre incluye commodities/
+    # índices) -- confirma con una llamada de prueba si tu plan los cubre.
+    # Si tu bróker ya exporta estos símbolos por archivo MT4/MT5 (ver nota
+    # de Market Watch en DIAGNOSTICO_MT5.md), Twelve Data ni se usa para
+    # ellos: el archivo MT4/MT5 tiene prioridad y esto solo es un respaldo.
     SYMBOL_MAP = {
         "EURUSD": "EUR/USD",
         "GBPUSD": "GBP/USD",
@@ -30,6 +43,25 @@ class MarketDataService:
         "US100Cash": "NDX",
         "US500Cash": "SPX",
         "GER40Cash": "DAX",
+        # --- Nuevos: cruces de divisas (fila 3 de la tabla) ---
+        "EURGBP": "EUR/GBP",
+        "EURJPY": "EUR/JPY",
+        "EURCHF": "EUR/CHF",
+        "GBPJPY": "GBP/JPY",
+        "CHFJPY": "CHF/JPY",
+        "AUDJPY": "AUD/JPY",
+        "CADJPY": "CAD/JPY",
+        "NZDJPY": "NZD/JPY",
+        "AUDNZD": "AUD/NZD",
+        "AUDCHF": "AUD/CHF",
+        "GBPCHF": "GBP/CHF",
+        "CADCHF": "CAD/CHF",
+        # --- Nuevo: índice (fila 4) -- verificar disponibilidad en tu plan ---
+        "STOXX50Cash": "STOXX50E",
+        # --- Nuevos: metales/materias primas (fila 5) -- verificar plan ---
+        "WTI": "WTI/USD",
+        "BRENT": "BRENT/USD",
+        "COPPER": "XCU/USD",
     }
 
     def __init__(self):
@@ -55,6 +87,55 @@ class MarketDataService:
     def _get_symbol(self, asset: str) -> str:
         return self.SYMBOL_MAP.get(asset, asset)
 
+    def _candidate_mt_symbols(self, asset: str) -> List[str]:
+        """
+        Lista de nombres candidatos a probar para archivos MT4/MT5, en
+        orden de prioridad:
+        1. Alias explícito del bróker (settings.MT_SYMBOL_ALIASES).
+        2. Nombre "limpio" por defecto (sin '/', sin 'CASH').
+        3. El símbolo tal cual, sin limpiar (por si el bróker no usa el
+           sufijo "Cash" para índices, ej. archivo "history_STOXX50.csv"
+           en vez de "history_STOXX50Cash.csv").
+        CAMBIO (fix, 2026-08-07): antes solo se probaba la opción 2, lo que
+        rompía cualquier activo cuyo bróker use un nombre distinto (muy
+        común en índices/materias primas: WTI/BRENT/COPPER/STOXX50 varían
+        bastante entre brokers, a diferencia de los pares de divisas).
+        """
+        alias = settings.MT_SYMBOL_ALIASES.get(asset) if hasattr(settings, "MT_SYMBOL_ALIASES") else None
+        clean = asset.upper().replace("/", "").replace("\\", "").replace("CASH", "")
+        candidates = []
+        if alias:
+            candidates.append(alias.upper().replace("/", "").replace("\\", ""))
+        candidates.append(clean)
+        if clean != asset.upper():
+            candidates.append(asset.upper().replace("/", "").replace("\\", ""))
+        # Elimina duplicados preservando el orden
+        seen = set()
+        result = []
+        for c in candidates:
+            if c not in seen:
+                seen.add(c)
+                result.append(c)
+        return result
+
+    def _find_mt_file_by_prefix(self, prefix: str) -> Optional[str]:
+        """
+        Última opción: si ningún nombre candidato exacto coincide, busca en
+        el directorio de archivos comunes de MT4/MT5 algún archivo
+        `history_<algo que empiece con prefix>` -- cubre sufijos de bróker
+        que no anticipamos (ej. "WTIUSD", "WTI.a", "WTIcash").
+        """
+        try:
+            if not settings.MT4_FILES_PATH or not os.path.isdir(settings.MT4_FILES_PATH):
+                return None
+            target = f"HISTORY_{prefix.upper()}"
+            for fname in os.listdir(settings.MT4_FILES_PATH):
+                if fname.upper().startswith(target):
+                    return fname
+        except Exception:
+            pass
+        return None
+
     def _get_mt4_price(self, asset: str) -> Optional[Dict]:
         """Try to get price from MT4/MT5 common files."""
         try:
@@ -63,14 +144,14 @@ class MarketDataService:
             prices_file = os.path.join(settings.MT4_FILES_PATH, "mt4_prices.csv")
             if not os.path.exists(prices_file):
                 return None
-            
-            clean_asset = asset.upper().replace("/", "").replace("CASH", "")
-            
+
+            candidates = self._candidate_mt_symbols(asset)
+
             with open(prices_file, mode='r', encoding='utf-8', errors='ignore') as f:
                 reader = csv.DictReader(f)
                 for row in reader:
                     symbol = row.get('Symbol', '').upper().replace("/", "").replace("CASH", "")
-                    if symbol == clean_asset:
+                    if symbol in candidates:
                         bid = float(row.get('Bid', 0))
                         ask = float(row.get('Ask', 0))
                         price = (bid + ask) / 2 if ask > 0 else bid
@@ -139,17 +220,29 @@ class MarketDataService:
         # 1. Try MT4 History File
         if settings.MT4_FILES_PATH:
             try:
-                clean_symbol = asset.upper().replace("/", "").replace("\\", "")
-                # Handle index naming variations (e.g. US30Cash vs US30)
-                if "CASH" in clean_symbol:
-                    clean_symbol = clean_symbol.replace("CASH", "")
-                
-                # Try to find interval-specific file first
-                history_file = os.path.join(settings.MT4_FILES_PATH, f"history_{clean_symbol}_{interval}.csv")
-                if not os.path.exists(history_file):
-                    history_file = os.path.join(settings.MT4_FILES_PATH, f"history_{clean_symbol}.csv")
-                
-                if os.path.exists(history_file):
+                # CAMBIO (fix, 2026-08-07): antes solo se probaba UN nombre
+                # "limpio" (asset sin '/', sin 'CASH'). Se amplía a una
+                # lista de candidatos (alias de bróker configurado + nombre
+                # limpio + símbolo tal cual) y, si ninguno coincide
+                # exactamente, se busca por prefijo en el directorio -- ver
+                # `_candidate_mt_symbols` / `_find_mt_file_by_prefix`.
+                history_file = None
+                for clean_symbol in self._candidate_mt_symbols(asset):
+                    candidate = os.path.join(settings.MT4_FILES_PATH, f"history_{clean_symbol}_{interval}.csv")
+                    if os.path.exists(candidate):
+                        history_file = candidate
+                        break
+                    candidate = os.path.join(settings.MT4_FILES_PATH, f"history_{clean_symbol}.csv")
+                    if os.path.exists(candidate):
+                        history_file = candidate
+                        break
+                if history_file is None:
+                    by_prefix = self._find_mt_file_by_prefix(self._candidate_mt_symbols(asset)[0])
+                    if by_prefix:
+                        history_file = os.path.join(settings.MT4_FILES_PATH, by_prefix)
+                        logger.info(f"[MT_SYMBOL_MATCH] {asset}: no hubo coincidencia exacta, se usó '{by_prefix}' por prefijo.")
+
+                if history_file and os.path.exists(history_file):
                     df = pd.read_csv(history_file)
                     df["datetime"] = pd.to_datetime(df["datetime"])
                     df = df.sort_values("datetime").reset_index(drop=True)
@@ -158,7 +251,13 @@ class MarketDataService:
                             df[col] = pd.to_numeric(df[col], errors="coerce")
                     return df
                 else:
-                    logger.debug(f"[MT5_DEBUG] MT4 history file NOT FOUND: {history_file}")
+                    logger.debug(
+                        f"[MT_DEBUG] Ningún archivo de historial encontrado para {asset} "
+                        f"(candidatos probados: {self._candidate_mt_symbols(asset)}). "
+                        f"Verifica que el símbolo esté agregado en Market Watch de tu terminal, "
+                        f"o configura un alias en settings.MT_SYMBOL_ALIASES si tu bróker usa "
+                        f"otro nombre. Se intentará Twelve Data como respaldo."
+                    )
             except Exception as e:
                 logger.warning(f"Failed to read MT4 history for {asset}: {e}")
 
@@ -207,7 +306,17 @@ class MarketDataService:
                     self._history_cache[cache_key] = df
                     self._last_update[cache_key] = datetime.now()
                     return df
-            
+                else:
+                    # CAMBIO (fix, 2026-08-07): antes esto fallaba en
+                    # silencio (sin log) cuando Twelve Data respondía 200
+                    # pero sin "values" (símbolo no soportado en el plan,
+                    # límite de crédito, etc.) -- se agrega log explícito
+                    # para poder diagnosticar por qué un activo nunca tiene
+                    # datos, en vez de adivinar.
+                    logger.warning(f"[TWELVE_DATA] {asset} ({symbol}): respuesta sin 'values' -- {data.get('message', data)}")
+            else:
+                logger.warning(f"[TWELVE_DATA] {asset} ({symbol}): HTTP {response.status_code} -- {response.text[:200]}")
+
             return self._history_cache.get(cache_key)
         except Exception as e:
             logger.error(f"API history failed for {asset}: {e}")
