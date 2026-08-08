@@ -45,3 +45,5 @@ Thumbs.db
 .pytest_cache/
 htmlcov/
 .coverage
+logs/system_2026-07-09.log.zip
+logs/system_2026-07-15.log.zip
