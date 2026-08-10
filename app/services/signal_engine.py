@@ -126,33 +126,6 @@ class SignalEngine:
                 logger.info(f"[REJECT] {asset}: sin datos históricos (MT4 no conectado o Twelve Data sin respuesta).")
                 return None
 
-            # CAMBIO 16: Filtro de spread máximo
-            price_data = await market_data_service.get_price(asset)
-            spread = 0.0
-            if price_data and "ask" in price_data and "bid" in price_data:
-                spread = price_data["ask"] - price_data["bid"]
-            
-            pip_info = Asset.get_pip_info(asset)
-            pip_size = pip_info["pip_size"]
-            current_spread_pips = round(spread / pip_size, 1)
-
-            max_spread_pips = {
-                "XAU": 50.0, # Aumentado para evitar bloqueos por spread en Oro
-                "US30": 30.0,
-                "US100": 30.0,
-                "US500": 30.0,
-                "DAX": 30.0,
-                "GER40": 30.0,
-                "DJI": 30.0,
-                "NDX": 30.0,
-                "SPX": 30.0,
-            }.get(asset.upper().split("USD")[0], 10.0) # Default 10.0 for FX pairs
-
-            if current_spread_pips > max_spread_pips:
-                logger.info(f"Signal for {asset} rejected: Spread ({current_spread_pips} pips) exceeds max allowed ({max_spread_pips} pips).")
-                logger.debug(f"[DEBUG] Skipping {asset}: Spread too high ({current_spread_pips} pips).")
-                return None
-
             # CAMBIO (migración indicadores -> estrategias): en vez de contar
             # votos de 18 indicadores, se evalúan SOLO las (hasta 2)
             # estrategias SMC asignadas al grupo de este activo.
@@ -169,8 +142,9 @@ class SignalEngine:
                     # Excel dedicado en vez de descartarse. El monitor
                     # (pending_signals_monitor.py) revisa periódicamente si
                     # la estrategia restante confirma la MISMA dirección
-                    # antes de que expire, y si es así llama de nuevo a
-                    # analyze_asset() para que la señal se active normalmente.
+                    # antes de que expire, y si es así llama directamente a
+                    # `_finalize_signal()` (NO a analyze_asset() de nuevo,
+                    # ver CAMBIO ahí) para que la señal se active.
                     await excel_manager.register_pending_signal(
                         asset=asset, direction=direction, details=details,
                         strategy_ids=strat_extra.get("strategy_ids", []),
@@ -185,111 +159,171 @@ class SignalEngine:
                     logger.info(f"[REJECT] {asset}: dirección {direction} con solo {indicators_met}/{self.min_strategies} estrategias confirmadas.")
                 return None
 
-            # Session Filter: Londres/Nueva York
-            # CAMBIO (fix "sigue sin enviar señales"): esta condición estaba
-            # hardcodeada a 07:00-18:00 UTC, IGNORANDO por completo
-            # settings.SESSION_FILTER_ENABLED / SESSION_START_HOUR_UTC /
-            # SESSION_END_HOUR_UTC (que sí existen en config.py pero nunca se
-            # leían aquí). Ahora respeta la configuración real.
-            # IMPORTANTE PARA DIAGNÓSTICO: si estás en Mexico City (UTC-6),
-            # la ventana 06:00-21:00 UTC equivale a 00:00-15:00 hora de
-            # Mexico City. Si pruebas por la tarde/noche (hora de México),
-            # este filtro bloqueará TODAS las señales sin importar nada más.
-            if settings.SESSION_FILTER_ENABLED:
-                current_hour = datetime.utcnow().hour
-                if not (settings.SESSION_START_HOUR_UTC <= current_hour < settings.SESSION_END_HOUR_UTC):
-                    logger.info(
-                        f"[REJECT] {asset}: fuera de la ventana de sesión "
-                        f"({settings.SESSION_START_HOUR_UTC}:00-{settings.SESSION_END_HOUR_UTC}:00 UTC). "
-                        f"Hora actual UTC: {current_hour}:00."
-                    )
-                    return None
-
-            # Volatility Filter: Avoid "Flat" markets
-            if df is not None and len(df) > 50:
-                recent_atr = df["high"].rolling(14).max() - df["low"].rolling(14).min()
-                avg_atr = recent_atr.mean()
-                current_atr = recent_atr.iloc[-1]
-                
-                if current_atr < (avg_atr * 0.5):
-                    logger.info(f"Signal for {asset} rejected: Low volatility (Current ATR {round(current_atr/pip_size, 1)} < 50% of Avg {round(avg_atr/pip_size, 1)}).")
-                    return None
-
-                # Filter for high volatility (erratic markets) - Flexibilizado a 2.5x
-                if current_atr > (avg_atr * 2.5): 
-                    logger.info(f"Signal for {asset} rejected: High volatility (Current ATR {round(current_atr/pip_size, 1)} > 250% of Avg {round(avg_atr/pip_size, 1)}).")
-                    return None
-
-            # Validate with structural timeframe
-            structural_confirmed = await self._validate_structural(asset, direction)
-            if not structural_confirmed:
-                logger.info(f"Signal for {asset} rejected: Failed structural validation.")
-                logger.debug(f"[DEBUG] Skipping {asset}: Structural validation failed.")
-                return None
-
-            # CAMBIO (análisis de win rate, datos reales 2026-07-07): nuevo
-            # filtro de tendencia macro (diario). Motivación: 206 de 207
-            # señales del día analizado fueron SELL (206:1), incluyendo
-            # USDJPY/USDCAD/USDCHF -- pares donde el USD es la divisa BASE.
-            # Ese mismo día, según noticias reales, el dólar estaba en
-            # fortalecimiento generalizado (demanda de refugio, USDJPY cerca
-            # de máximos de 40 años). Para esos 3 pares, una señal SELL
-            # apostaba contra la tendencia diaria real -- y fueron
-            # exactamente los 3 peores activos (USDJPY el peor de todos, en
-            # las 3 sesiones sin excepción). `_validate_structural` ya revisa
-            # 30m/1h/4h, pero con fallback PERMISIVO si los datos no se
-            # pueden obtener (deja pasar la señal). Este filtro añade una
-            # capa diaria adicional y, a diferencia de la anterior, FALLA
-            # CERRADO: si no se puede obtener el dato diario, se rechaza la
-            # señal en vez de dejarla pasar -- dado que ya vimos errores
-            # intermitentes de API/MT4 justo para varios de estos activos.
-            macro_confirmed = await self._validate_macro_trend(asset, direction)
-            if not macro_confirmed:
-                logger.info(f"Signal for {asset} rejected: Failed macro (daily) trend validation.")
-                return None
-
-            # CAMBIO (migración a estrategias): con el motor de estrategias,
-            # llegar hasta aquí YA implica que las 2 estrategias asignadas al
-            # activo confirmaron la misma dirección (self.min_strategies=2,
-            # el máximo posible) -- ya no existe el concepto de "señal
-            # límite" que exigía FVG/liquidez como confirmación EXTRA. Se
-            # conserva el cálculo de `smc_info` únicamente como telemetría
-            # (se guarda en Excel: fvg_confluence, liquidity_sweep,
-            # smc_quality) para análisis posterior, pero ya no bloquea la señal.
-            smc_info = self._assess_smc_confluence(direction, float(df["close"].iloc[-1]), df)
-
-            # If all checks pass, create the signal
-            signal = self._create_signal(asset, direction, df, indicators_met, smc_info=smc_info, strategy_details=details)
-            if signal:
-                self.active_signals[signal.id] = signal
-
-                # CAMBIO: ejecución en vivo en MT5 (a pedido del usuario).
-                # Si MT5_LIVE_TRADING_ENABLED está en False (default), esto
-                # no hace nada y el sistema sigue funcionando en modo
-                # "solo señales" como hasta ahora. Si está habilitado, se
-                # abre una posición real con el SL/TP calculados y se guarda
-                # el ticket en la señal para poder gestionar cierres
-                # parciales y breakeven en position_monitor.py.
-                ticket = mt5_executor.open_position(signal)
-                if ticket:
-                    signal.mt5_ticket = ticket
-                elif settings.MT5_LIVE_TRADING_ENABLED:
-                    logger.error(
-                        f"MT5: la señal {signal.id} ({signal.asset}) se generó pero "
-                        f"la orden real NO pudo enviarse al bróker. Revisa los logs "
-                        f"anteriores para el motivo. La señal sigue registrada "
-                        f"normalmente (modo señal), pero no hay posición real abierta."
-                    )
-
-                await excel_manager.register_signal(signal)
-                logger.info(f"NEW SIGNAL: {signal.asset} {signal.direction.value} @ {signal.entry_price}")
-                return signal
+            return await self._finalize_signal(asset, direction, indicators_met, details, df)
 
         except Exception as e:
             logger.error(f"Error analyzing {asset}: {e}")
             import traceback
             logger.debug(traceback.format_exc())
-        
+
+        return None
+
+    async def _finalize_signal(self, asset: str, direction: str, indicators_met: int,
+                                details: List[str], df: pd.DataFrame) -> Optional[Signal]:
+        """
+        Corre TODOS los filtros posteriores a la confirmación de
+        estrategia (spread, sesión, volatilidad, estructura, tendencia
+        macro) y crea la señal si todos pasan.
+
+        CAMBIO CRÍTICO (fix, 2026-08-10): esto antes estaba dentro de
+        `analyze_asset()`, y `pending_signals_monitor.py` volvía a llamar
+        a `analyze_asset()` completo cuando una señal "por confirmar"
+        recibía su segunda confirmación. El problema: `analyze_asset()`
+        vuelve a llamar a `strategy_engine.evaluate()` con datos frescos,
+        y para estrategias sensibles al último candle (ej. Estrategia 1 -
+        Silver Bullet, que depende de un CHoCH/barrido en la vela más
+        reciente) esa re-evaluación -- hecha apenas 1 segundo después --
+        casi siempre YA NO coincidía con la confirmación que se acababa de
+        detectar, y la señal se rechazaba con "ninguna estrategia
+        confirmó dirección" inmediatamente después de decir "CONFIRMADA".
+        Confirmado con logs reales: las 2 únicas señales que llegaron a
+        CONFIRMADA en `senales_por_confirmar.xlsx` (USDCHF 22:00:18,
+        AUDNZD 21:37:12) fueron rechazadas 1-2 segundos después por esta
+        misma causa -- 0 llegaron a `signals_tracking.xlsx` en todo el día.
+
+        Ahora la dirección confirmada se pasa directo a este método SIN
+        volver a preguntarle a `strategy_engine` -- los filtros de abajo
+        (spread, sesión, estructura, macro) SÍ vuelven a evaluarse con
+        datos frescos porque son filtros de contexto de mercado
+        independientes, no la misma micro-confirmación de estrategia.
+        """
+        # CAMBIO 16: Filtro de spread máximo
+        price_data = await market_data_service.get_price(asset)
+        spread = 0.0
+        if price_data and "ask" in price_data and "bid" in price_data:
+            spread = price_data["ask"] - price_data["bid"]
+
+        pip_info = Asset.get_pip_info(asset)
+        pip_size = pip_info["pip_size"]
+        current_spread_pips = round(spread / pip_size, 1)
+
+        max_spread_pips = {
+            "XAU": 50.0,  # Aumentado para evitar bloqueos por spread en Oro
+            "US30": 30.0,
+            "US100": 30.0,
+            "US500": 30.0,
+            "DAX": 30.0,
+            "GER40": 30.0,
+            "DJI": 30.0,
+            "NDX": 30.0,
+            "SPX": 30.0,
+        }.get(asset.upper().split("USD")[0], 10.0)  # Default 10.0 for FX pairs
+
+        if current_spread_pips > max_spread_pips:
+            logger.info(f"Signal for {asset} rejected: Spread ({current_spread_pips} pips) exceeds max allowed ({max_spread_pips} pips).")
+            logger.debug(f"[DEBUG] Skipping {asset}: Spread too high ({current_spread_pips} pips).")
+            return None
+
+        # Session Filter: Londres/Nueva York
+        # CAMBIO (fix "sigue sin enviar señales"): esta condición estaba
+        # hardcodeada a 07:00-18:00 UTC, IGNORANDO por completo
+        # settings.SESSION_FILTER_ENABLED / SESSION_START_HOUR_UTC /
+        # SESSION_END_HOUR_UTC (que sí existen en config.py pero nunca se
+        # leían aquí). Ahora respeta la configuración real.
+        # IMPORTANTE PARA DIAGNÓSTICO: si estás en Mexico City (UTC-6),
+        # la ventana 06:00-21:00 UTC equivale a 00:00-15:00 hora de
+        # Mexico City. Si pruebas por la tarde/noche (hora de México),
+        # este filtro bloqueará TODAS las señales sin importar nada más.
+        if settings.SESSION_FILTER_ENABLED:
+            current_hour = datetime.utcnow().hour
+            if not (settings.SESSION_START_HOUR_UTC <= current_hour < settings.SESSION_END_HOUR_UTC):
+                logger.info(
+                    f"[REJECT] {asset}: fuera de la ventana de sesión "
+                    f"({settings.SESSION_START_HOUR_UTC}:00-{settings.SESSION_END_HOUR_UTC}:00 UTC). "
+                    f"Hora actual UTC: {current_hour}:00."
+                )
+                return None
+
+        # Volatility Filter: Avoid "Flat" markets
+        if df is not None and len(df) > 50:
+            recent_atr = df["high"].rolling(14).max() - df["low"].rolling(14).min()
+            avg_atr = recent_atr.mean()
+            current_atr = recent_atr.iloc[-1]
+
+            if current_atr < (avg_atr * 0.5):
+                logger.info(f"Signal for {asset} rejected: Low volatility (Current ATR {round(current_atr/pip_size, 1)} < 50% of Avg {round(avg_atr/pip_size, 1)}).")
+                return None
+
+            # Filter for high volatility (erratic markets) - Flexibilizado a 2.5x
+            if current_atr > (avg_atr * 2.5):
+                logger.info(f"Signal for {asset} rejected: High volatility (Current ATR {round(current_atr/pip_size, 1)} > 250% of Avg {round(avg_atr/pip_size, 1)}).")
+                return None
+
+        # Validate with structural timeframe
+        structural_confirmed = await self._validate_structural(asset, direction)
+        if not structural_confirmed:
+            logger.info(f"Signal for {asset} rejected: Failed structural validation.")
+            logger.debug(f"[DEBUG] Skipping {asset}: Structural validation failed.")
+            return None
+
+        # CAMBIO (análisis de win rate, datos reales 2026-07-07): nuevo
+        # filtro de tendencia macro (diario). Motivación: 206 de 207
+        # señales del día analizado fueron SELL (206:1), incluyendo
+        # USDJPY/USDCAD/USDCHF -- pares donde el USD es la divisa BASE.
+        # Ese mismo día, según noticias reales, el dólar estaba en
+        # fortalecimiento generalizado (demanda de refugio, USDJPY cerca
+        # de máximos de 40 años). Para esos 3 pares, una señal SELL
+        # apostaba contra la tendencia diaria real -- y fueron
+        # exactamente los 3 peores activos (USDJPY el peor de todos, en
+        # las 3 sesiones sin excepción). `_validate_structural` ya revisa
+        # 30m/1h/4h, pero con fallback PERMISIVO si los datos no se
+        # pueden obtener (deja pasar la señal). Este filtro añade una
+        # capa diaria adicional y, a diferencia de la anterior, FALLA
+        # CERRADO: si no se puede obtener el dato diario, se rechaza la
+        # señal en vez de dejarla pasar -- dado que ya vimos errores
+        # intermitentes de API/MT4 justo para varios de estos activos.
+        macro_confirmed = await self._validate_macro_trend(asset, direction)
+        if not macro_confirmed:
+            logger.info(f"Signal for {asset} rejected: Failed macro (daily) trend validation.")
+            return None
+
+        # CAMBIO (migración a estrategias): con el motor de estrategias,
+        # llegar hasta aquí YA implica que las 2 estrategias asignadas al
+        # activo confirmaron la misma dirección (self.min_strategies=2,
+        # el máximo posible) -- ya no existe el concepto de "señal
+        # límite" que exigía FVG/liquidez como confirmación EXTRA. Se
+        # conserva el cálculo de `smc_info` únicamente como telemetría
+        # (se guarda en Excel: fvg_confluence, liquidity_sweep,
+        # smc_quality) para análisis posterior, pero ya no bloquea la señal.
+        smc_info = self._assess_smc_confluence(direction, float(df["close"].iloc[-1]), df)
+
+        # If all checks pass, create the signal
+        signal = self._create_signal(asset, direction, df, indicators_met, smc_info=smc_info, strategy_details=details)
+        if signal:
+            self.active_signals[signal.id] = signal
+
+            # CAMBIO: ejecución en vivo en MT5 (a pedido del usuario).
+            # Si MT5_LIVE_TRADING_ENABLED está en False (default), esto
+            # no hace nada y el sistema sigue funcionando en modo
+            # "solo señales" como hasta ahora. Si está habilitado, se
+            # abre una posición real con el SL/TP calculados y se guarda
+            # el ticket en la señal para poder gestionar cierres
+            # parciales y breakeven en position_monitor.py.
+            ticket = mt5_executor.open_position(signal)
+            if ticket:
+                signal.mt5_ticket = ticket
+            elif settings.MT5_LIVE_TRADING_ENABLED:
+                logger.error(
+                    f"MT5: la señal {signal.id} ({signal.asset}) se generó pero "
+                    f"la orden real NO pudo enviarse al bróker. Revisa los logs "
+                    f"anteriores para el motivo. La señal sigue registrada "
+                    f"normalmente (modo señal), pero no hay posición real abierta."
+                )
+
+            await excel_manager.register_signal(signal)
+            logger.info(f"NEW SIGNAL: {signal.asset} {signal.direction.value} @ {signal.entry_price}")
+            return signal
+
         return None
 
     async def analyze_all_assets(self) -> List[Signal]:

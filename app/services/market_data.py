@@ -72,6 +72,25 @@ class MarketDataService:
         self._last_update: Dict[str, datetime] = {}
         self._request_times: List[float] = []
         self._max_requests_per_minute = 7
+        # CAMBIO (fix, 2026-08-10): control de crédito diario de Twelve
+        # Data. Se detectó en logs reales que, con 19 activos sin archivo
+        # MT4 disponible, cada ciclo de análisis llamaba a Twelve Data para
+        # los 19 -- SIN throttling entre intentos fallidos (el cache de 5
+        # min de arriba solo aplica a símbolos que YA tuvieron éxito
+        # alguna vez). Resultado real observado: 800 créditos/día del plan
+        # agotados a las 08:48 UTC (mismo día, apenas ~40 min después del
+        # arranque), dejando sin datos incluso a activos que antes SÍ
+        # funcionaban (ej. USDJPY) por el resto del día.
+        # `_failed_lookup_at`: cooldown por símbolo tras un intento fallido
+        # (no repetir antes de FAILED_LOOKUP_COOLDOWN_SECONDS).
+        # `_quota_exhausted_until`: cuando Twelve Data responde "run out of
+        # API credits" (HTTP 429), se deja de llamar por completo hasta
+        # este instante (por defecto, hasta la medianoche UTC siguiente,
+        # cuando el plan gratuito renueva el crédito) en vez de seguir
+        # intentando en cada ciclo sin sentido.
+        self._failed_lookup_at: Dict[str, datetime] = {}
+        self.FAILED_LOOKUP_COOLDOWN_SECONDS = 600  # 10 minutos
+        self._quota_exhausted_until: Optional[datetime] = None
         self._rate_lock = asyncio.Lock()
         self._max_cache_size = 100 
 
@@ -243,13 +262,29 @@ class MarketDataService:
                         logger.info(f"[MT_SYMBOL_MATCH] {asset}: no hubo coincidencia exacta, se usó '{by_prefix}' por prefijo.")
 
                 if history_file and os.path.exists(history_file):
-                    df = pd.read_csv(history_file)
-                    df["datetime"] = pd.to_datetime(df["datetime"])
-                    df = df.sort_values("datetime").reset_index(drop=True)
-                    for col in ["open", "high", "low", "close", "volume"]:
-                        if col in df.columns:
-                            df[col] = pd.to_numeric(df[col], errors="coerce")
-                    return df
+                    try:
+                        df = pd.read_csv(history_file)
+                    except pd.errors.EmptyDataError:
+                        # CAMBIO (fix, 2026-08-10): el EA (PriceExporter.mq5)
+                        # reescribe este archivo periódicamente; si Python lo
+                        # lee justo en ese instante puede encontrarlo vacío
+                        # por una fracción de segundo. Esto NO es un error
+                        # real (el archivo se repuebla en el próximo ciclo
+                        # del EA) -- se registra como DEBUG y se sigue a
+                        # Twelve Data solo para ESTE ciclo, en vez de un
+                        # WARNING que aparenta ser un problema permanente.
+                        # Confirmado en log real: "Failed to read MT4
+                        # history for USDJPY: No columns to parse from file"
+                        # justo en un activo que normalmente sí funciona.
+                        logger.debug(f"[MT_DEBUG] {asset}: archivo de historial encontrado pero vacío en este instante (el EA probablemente lo está reescribiendo) -- se reintentará en el siguiente ciclo.")
+                        df = None
+                    if df is not None:
+                        df["datetime"] = pd.to_datetime(df["datetime"])
+                        df = df.sort_values("datetime").reset_index(drop=True)
+                        for col in ["open", "high", "low", "close", "volume"]:
+                            if col in df.columns:
+                                df[col] = pd.to_numeric(df[col], errors="coerce")
+                        return df
                 else:
                     logger.debug(
                         f"[MT_DEBUG] Ningún archivo de historial encontrado para {asset} "
@@ -266,6 +301,24 @@ class MarketDataService:
             last_upd = self._last_update.get(cache_key)
             if last_upd and (datetime.now() - last_upd).seconds < 300: # 5 min cache
                 return self._history_cache[cache_key]
+
+        now = datetime.now()
+
+        # CAMBIO (fix, 2026-08-10): si ya sabemos que se agotó el crédito
+        # diario, ni siquiera se intenta -- evita cientos de llamadas 429
+        # inútiles por el resto del día (ver __init__ para el contexto).
+        if self._quota_exhausted_until and now < self._quota_exhausted_until:
+            logger.debug(f"[TWELVE_DATA] Crédito diario agotado hasta {self._quota_exhausted_until.isoformat()} -- se omite la llamada para {asset}.")
+            return self._history_cache.get(cache_key)
+
+        # CAMBIO (fix, 2026-08-10): cooldown por símbolo tras un fallo
+        # reciente, para no repetir un intento que muy probablemente vuelva
+        # a fallar (símbolo no soportado en el plan, etc.) y así conservar
+        # crédito para los símbolos que sí puedan resolverse.
+        last_failed = self._failed_lookup_at.get(cache_key)
+        if last_failed and (now - last_failed).total_seconds() < self.FAILED_LOOKUP_COOLDOWN_SECONDS:
+            logger.debug(f"[TWELVE_DATA] {asset}: en cooldown tras fallo reciente ({int((now - last_failed).total_seconds())}s), se omite este ciclo.")
+            return self._history_cache.get(cache_key)
 
         try:
             await self._wait_for_rate_limit()
@@ -314,12 +367,33 @@ class MarketDataService:
                     # para poder diagnosticar por qué un activo nunca tiene
                     # datos, en vez de adivinar.
                     logger.warning(f"[TWELVE_DATA] {asset} ({symbol}): respuesta sin 'values' -- {data.get('message', data)}")
+                    self._failed_lookup_at[cache_key] = now
+            elif response.status_code == 429:
+                # CAMBIO (fix, 2026-08-10): distingue "crédito diario
+                # agotado" (activa el short-circuit global hasta medianoche
+                # UTC) de un simple rate-limit momentáneo (solo cooldown
+                # por símbolo). Confirmado con log real: "You have run out
+                # of API credits for the day... limit being 800".
+                body_text = response.text[:300]
+                logger.warning(f"[TWELVE_DATA] {asset} ({symbol}): HTTP 429 -- {body_text}")
+                self._failed_lookup_at[cache_key] = now
+                if "run out of api credits" in body_text.lower() or "credits for the day" in body_text.lower():
+                    tomorrow_utc = (datetime.utcnow() + pd.Timedelta(days=1)).replace(hour=0, minute=5, second=0, microsecond=0)
+                    self._quota_exhausted_until = tomorrow_utc
+                    logger.error(
+                        f"[TWELVE_DATA] Crédito diario agotado -- se suspenden TODAS las llamadas a "
+                        f"Twelve Data hasta {tomorrow_utc.isoformat()} UTC. Los activos sin archivo "
+                        f"MT4/MT5 no tendrán datos hasta entonces. Considera un plan de pago o revisa "
+                        f"cuántos activos realmente necesitan este respaldo (ver DIAGNOSTICO_MT5.md)."
+                    )
             else:
                 logger.warning(f"[TWELVE_DATA] {asset} ({symbol}): HTTP {response.status_code} -- {response.text[:200]}")
+                self._failed_lookup_at[cache_key] = now
 
             return self._history_cache.get(cache_key)
         except Exception as e:
             logger.error(f"API history failed for {asset}: {e}")
+            self._failed_lookup_at[cache_key] = now
             return self._history_cache.get(cache_key)
 
     async def _wait_for_rate_limit(self):

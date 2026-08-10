@@ -8,10 +8,25 @@ mantenido por `excel_manager`). Para cada fila PENDIENTE:
    se marca EXPIRADA y no se activa nada.
 2. Si no ha expirado, se vuelve a evaluar el activo con
    `strategy_engine.evaluate()`. Si la(s) estrategia(s) que faltaban ya
-   confirman la MISMA dirección, la fila se marca CONFIRMADA y se llama a
-   `signal_engine.analyze_asset()` para que la señal se genere y pase por
-   el pipeline normal (spread, sesión, estructura, macro, Excel principal,
-   MT5) exactamente igual que una señal directa.
+   confirman la MISMA dirección, la fila se marca CONFIRMADA y se llama
+   DIRECTO a `signal_engine._finalize_signal()` -- ver CAMBIO CRÍTICO
+   abajo -- para que la señal pase por el resto del pipeline (spread,
+   sesión, estructura, macro, Excel principal, MT5).
+
+CAMBIO CRÍTICO (fix, 2026-08-10): antes este monitor llamaba a
+`signal_engine.analyze_asset(asset)` completo al confirmar, el cual vuelve
+a invocar `strategy_engine.evaluate()` desde cero con datos recién
+descargados. Para estrategias sensibles al último candle (ej. Estrategia 1
+- Silver Bullet), esa segunda evaluación -- hecha 1-2 segundos después --
+casi nunca coincidía con la confirmación recién detectada, y la señal se
+rechazaba de inmediato con "ninguna estrategia confirmó dirección" justo
+después de haberse marcado "CONFIRMADA". Confirmado con logs reales del
+2026-08-09: las 2 únicas señales que llegaron a CONFIRMADA ese día
+(USDCHF 22:00:18, AUDNZD 21:37:12) fueron rechazadas 1-2 segundos después
+por esta causa -- 0 llegaron a `signals_tracking.xlsx` en todo el día.
+Ahora se pasa la dirección YA confirmada (y el mismo `df` que la confirmó)
+directo a `_finalize_signal()`, sin volver a preguntarle a
+`strategy_engine`.
 
 Uso: se agenda igual que el resto de tareas en `scheduler.py`, por
 ejemplo cada `settings.PENDING_SIGNALS_CHECK_INTERVAL_SECONDS` segundos.
@@ -32,6 +47,9 @@ async def check_pending_signals():
     pending_rows = excel_manager.get_open_pending_signals()
     if not pending_rows:
         return
+
+    # Import diferido para evitar import circular (signal_engine importa excel_manager).
+    from app.services.signal_engine import signal_engine
 
     now = datetime.now()
     checked = 0
@@ -55,9 +73,14 @@ async def check_pending_signals():
             logger.info(f"[PENDIENTE->EXPIRADA] {asset} {direction} (id={pending_id}): venció sin segunda confirmación.")
             continue
 
+        if signal_engine._has_active_signal(asset):
+            # Ya se abrió una señal para este activo por otra vía mientras
+            # esta quedaba pendiente -- no tiene sentido finalizarla también.
+            continue
+
         try:
             df = await market_data_service.get_time_series(
-                asset, interval=settings.SIGNAL_TIMEFRAME if hasattr(settings, "SIGNAL_TIMEFRAME") else "5m",
+                asset, interval=getattr(settings, "SIGNAL_TIMEFRAME", "5m"),
                 outputsize=200,
             )
         except Exception as e:
@@ -69,15 +92,16 @@ async def check_pending_signals():
 
         new_direction, strategies_confirmed, details, extra = strategy_engine.evaluate(asset, df)
 
-        # Import diferido para evitar import circular (signal_engine importa excel_manager).
-        from app.services.signal_engine import signal_engine
         min_strategies = getattr(signal_engine, "min_strategies", 2)
 
         if new_direction == direction and strategies_confirmed >= min_strategies:
             excel_manager.resolve_pending_signal(pending_id, "CONFIRMADA")
             confirmed += 1
-            logger.info(f"[PENDIENTE->CONFIRMADA] {asset} {direction} (id={pending_id}): segunda estrategia confirmó. Generando señal real...")
-            await signal_engine.analyze_asset(asset)
+            logger.info(f"[PENDIENTE->CONFIRMADA] {asset} {direction} (id={pending_id}): segunda estrategia confirmó. Finalizando señal...")
+            # CAMBIO CRÍTICO: se pasa la dirección YA confirmada y el mismo
+            # `df` recién obtenido -- NO se vuelve a llamar a
+            # strategy_engine.evaluate() por segunda vez (ver docstring).
+            await signal_engine._finalize_signal(asset, new_direction, strategies_confirmed, details, df)
         elif new_direction not in (direction, "NEUTRAL"):
             # La dirección se invirtió por completo: ya no tiene sentido
             # mantenerla viva, se descarta como expirada.
