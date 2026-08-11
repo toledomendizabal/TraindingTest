@@ -660,5 +660,54 @@ class StrategyEngine:
             "pending": pending,
         }
 
+    def evaluate_independent(self, asset: str, df: pd.DataFrame) -> List[Dict]:
+        """
+        CAMBIO (a pedido del usuario, 2026-08-11 -- prueba comparativa de
+        desempeño por estrategia, del 11 al 14/viernes): a diferencia de
+        `evaluate()` (que exige que las 2 estrategias asignadas a un
+        activo confirmen la MISMA dirección antes de generar una señal),
+        este método evalúa cada estrategia asignada de forma
+        COMPLETAMENTE INDEPENDIENTE. En cuanto UNA estrategia confirma,
+        esa confirmación ya es suficiente -- no espera a la otra.
+
+        Motivo: con el esquema anterior casi no había señales confirmadas
+        (ver senales_por_confirmar.xlsx: 46 EXPIRADA, 0 CONFIRMADA que
+        llegaran a generar señal real en varios días de prueba) porque en
+        la práctica casi nunca coinciden las 2 estrategias de un mismo
+        grupo al mismo tiempo. Además, el objetivo ahora es justamente
+        MEDIR qué estrategia individual rinde mejor -- exigir que 2
+        coincidan mezclaría los resultados y no permitiría comparar.
+
+        Retorna una lista de resultados, uno por cada estrategia que
+        confirmó en este ciclo (puede haber 0, 1, o hasta len(strategy_ids)
+        resultados si varias confirman al mismo tiempo, incluso en
+        direcciones opuestas -- cada una se trata como una señal
+        independiente y candidata a su propio trade):
+            [{"strategy_id": int, "strategy_name": str,
+              "direction": "BUY"|"SELL", "detail": str}, ...]
+        """
+        strategy_ids = get_strategies_for_asset(asset)
+        results: List[Dict] = []
+        if df is None or df.empty or len(df) < 60:
+            return results
+
+        for sid in strategy_ids:
+            func = STRATEGY_FUNCS.get(sid)
+            if func is None:
+                continue
+            try:
+                result = func(df)
+            except Exception as e:
+                logger.debug(f"[strategy_engine] Estrategia {sid} falló para {asset}: {e}")
+                result = None
+            if result:
+                results.append({
+                    "strategy_id": sid,
+                    "strategy_name": STRATEGY_NAMES.get(sid, f"Estrategia {sid}"),
+                    "direction": result["direction"],
+                    "detail": result["detail"],
+                })
+        return results
+
 
 strategy_engine = StrategyEngine()

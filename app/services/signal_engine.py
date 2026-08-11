@@ -42,6 +42,15 @@ class SignalEngine:
     # Se mantiene la clave "min_indicators" en el Excel de configuración por
     # compatibilidad (para no romper hojas ya existentes/scripts externos),
     # pero ahora se interpreta como "min_strategies".
+    #
+    # CAMBIO (2026-08-11, modo de estrategias independientes): mientras
+    # dure la prueba comparativa (hasta el viernes), `self.min_strategies`
+    # se sigue cargando desde Excel por compatibilidad pero YA NO SE USA
+    # para bloquear señales -- cada estrategia asignada a un activo se
+    # evalúa y dispara de forma independiente (ver
+    # `strategy_engine.evaluate_independent` y `analyze_asset`). Se deja el
+    # código de carga intacto para poder revertir fácilmente después del
+    # viernes si se decide volver a exigir 2 confirmaciones cruzadas.
     MIN_STRATEGIES_FOR_SIGNAL = 2
     SIGNAL_TIMEFRAME = "5m"
 
@@ -107,12 +116,39 @@ class SignalEngine:
         except Exception as e:
             logger.error(f"Error loading active signals: {e}")
 
-    async def analyze_asset(self, asset: str) -> Optional[Signal]:
-        try:
-            if self._has_active_signal(asset):
-                logger.info(f"[REJECT] {asset}: ya tiene una señal activa o está en cooldown.")
-                return None
+    async def analyze_asset(self, asset: str) -> List[Signal]:
+        """
+        CAMBIO (a pedido del usuario, 2026-08-11 -- prueba comparativa de
+        desempeño por estrategia, del 11 al 14/viernes): antes este método
+        exigía que las 2 estrategias asignadas al activo confirmaran la
+        MISMA dirección (o quedaba "pendiente" esperando a la segunda).
+        Ahora cada estrategia asignada se evalúa de forma INDEPENDIENTE
+        (`strategy_engine.evaluate_independent`) y basta con que UNA sola
+        confirme para generar su propia señal, etiquetada con qué
+        estrategia la originó -- sin esperar a ninguna otra.
 
+        Motivo (evidencia real, ver senales_por_confirmar.xlsx de varios
+        días de prueba): con el esquema anterior casi nunca coincidían 2
+        estrategias del mismo grupo al mismo tiempo -- 46 señales
+        EXPIRADA y 0 llegaron a convertirse en señal real. Además, el
+        objetivo ahora es justamente MEDIR qué estrategia individual
+        rinde mejor, así que mezclarlas en un solo voto no serviría.
+
+        Puede devolver 0, 1 o hasta 2 señales por llamada (si ambas
+        estrategias asignadas al activo confirman en el mismo ciclo,
+        incluso en direcciones opuestas -- cada una es independiente y se
+        registra por separado para poder comparar su desempeño real).
+
+        NOTA: el archivo `senales_por_confirmar.xlsx` y
+        `pending_signals_monitor.py` (de la migración anterior) se
+        conservan sin usar en este modo -- ya no hace falta "esperar a
+        una segunda estrategia", así que no deberían generarse filas
+        PENDIENTE nuevas mientras este modo esté activo. Ver
+        `CORRECCION_2026-08-11.md` si más adelante quieres revertir a la
+        confirmación cruzada.
+        """
+        signals: List[Signal] = []
+        try:
             df = await market_data_service.get_time_series(
                 asset, interval=self.signal_timeframe, outputsize=200
             )
@@ -124,52 +160,40 @@ class SignalEngine:
                 # para que sea diagnosticable sin tener que abrir los logs en
                 # disco.
                 logger.info(f"[REJECT] {asset}: sin datos históricos (MT4 no conectado o Twelve Data sin respuesta).")
-                return None
+                return signals
 
-            # CAMBIO (migración indicadores -> estrategias): en vez de contar
-            # votos de 18 indicadores, se evalúan SOLO las (hasta 2)
-            # estrategias SMC asignadas al grupo de este activo.
-            direction, indicators_met, details, strat_extra = strategy_engine.evaluate(asset, df)
+            results = strategy_engine.evaluate_independent(asset, df)
 
-            if direction == "NEUTRAL":
-                logger.info(f"[REJECT] {asset}: ninguna estrategia asignada ({strat_extra.get('strategy_ids')}) confirmó dirección.")
-                return None
+            if not results:
+                logger.info(f"[REJECT] {asset}: ninguna estrategia asignada confirmó dirección este ciclo.")
+                return signals
 
-            if indicators_met < self.min_strategies:
-                if strat_extra.get("pending"):
-                    # Una de las 2 estrategias confirmó, la otra todavía no:
-                    # se registra como "pendiente de confirmación" en el
-                    # Excel dedicado en vez de descartarse. El monitor
-                    # (pending_signals_monitor.py) revisa periódicamente si
-                    # la estrategia restante confirma la MISMA dirección
-                    # antes de que expire, y si es así llama directamente a
-                    # `_finalize_signal()` (NO a analyze_asset() de nuevo,
-                    # ver CAMBIO ahí) para que la señal se active.
-                    await excel_manager.register_pending_signal(
-                        asset=asset, direction=direction, details=details,
-                        strategy_ids=strat_extra.get("strategy_ids", []),
-                        confirmed_ids=strat_extra.get("confirmed_ids", []),
-                        entry_price_ref=float(df["close"].iloc[-1]),
-                    )
-                    logger.info(
-                        f"[PENDIENTE] {asset}: {direction} con {indicators_met}/{self.min_strategies} "
-                        f"estrategias confirmadas -- registrado en Excel de señales por confirmar."
-                    )
-                else:
-                    logger.info(f"[REJECT] {asset}: dirección {direction} con solo {indicators_met}/{self.min_strategies} estrategias confirmadas.")
-                return None
+            for res in results:
+                sid = res["strategy_id"]
+                sname = res["strategy_name"]
+                direction = res["direction"]
+                detail = [f"[Estrategia {sid} - {sname}] {res['detail']}"]
 
-            return await self._finalize_signal(asset, direction, indicators_met, details, df)
+                if self._has_active_signal(asset, strategy_id=sid):
+                    logger.info(f"[REJECT] {asset} (Estrategia {sid}): ya tiene una señal activa de esta misma estrategia, o está en cooldown.")
+                    continue
+
+                signal = await self._finalize_signal(asset, direction, 1, detail, df, strategy_id=sid, strategy_name=sname)
+                if signal:
+                    signals.append(signal)
+
+            return signals
 
         except Exception as e:
             logger.error(f"Error analyzing {asset}: {e}")
             import traceback
             logger.debug(traceback.format_exc())
 
-        return None
+        return signals
 
     async def _finalize_signal(self, asset: str, direction: str, indicators_met: int,
-                                details: List[str], df: pd.DataFrame) -> Optional[Signal]:
+                                details: List[str], df: pd.DataFrame,
+                                strategy_id: Optional[int] = None, strategy_name: str = "") -> Optional[Signal]:
         """
         Corre TODOS los filtros posteriores a la confirmación de
         estrategia (spread, sesión, volatilidad, estructura, tendencia
@@ -287,18 +311,18 @@ class SignalEngine:
             logger.info(f"Signal for {asset} rejected: Failed macro (daily) trend validation.")
             return None
 
-        # CAMBIO (migración a estrategias): con el motor de estrategias,
-        # llegar hasta aquí YA implica que las 2 estrategias asignadas al
-        # activo confirmaron la misma dirección (self.min_strategies=2,
-        # el máximo posible) -- ya no existe el concepto de "señal
-        # límite" que exigía FVG/liquidez como confirmación EXTRA. Se
-        # conserva el cálculo de `smc_info` únicamente como telemetría
-        # (se guarda en Excel: fvg_confluence, liquidity_sweep,
-        # smc_quality) para análisis posterior, pero ya no bloquea la señal.
+        # CAMBIO (actualizado 2026-08-11, modo de estrategias independientes):
+        # llegar hasta aquí implica que UNA estrategia (identificada en
+        # `strategy_id`/`strategy_name`) confirmó por sí sola -- ya no
+        # existe el concepto de "señal límite" que exigía FVG/liquidez
+        # como confirmación EXTRA de una segunda estrategia. Se conserva
+        # el cálculo de `smc_info` únicamente como telemetría (se guarda
+        # en Excel: fvg_confluence, liquidity_sweep, smc_quality) para
+        # análisis posterior, pero ya no bloquea la señal.
         smc_info = self._assess_smc_confluence(direction, float(df["close"].iloc[-1]), df)
 
         # If all checks pass, create the signal
-        signal = self._create_signal(asset, direction, df, indicators_met, smc_info=smc_info, strategy_details=details)
+        signal = self._create_signal(asset, direction, df, indicators_met, smc_info=smc_info, strategy_details=details, strategy_id=strategy_id, strategy_name=strategy_name)
         if signal:
             self.active_signals[signal.id] = signal
 
@@ -321,7 +345,8 @@ class SignalEngine:
                 )
 
             await excel_manager.register_signal(signal)
-            logger.info(f"NEW SIGNAL: {signal.asset} {signal.direction.value} @ {signal.entry_price}")
+            strat_label = f" [{signal.strategy_name}]" if signal.strategy_name else ""
+            logger.info(f"NEW SIGNAL: {signal.asset} {signal.direction.value} @ {signal.entry_price}{strat_label}")
             return signal
 
         return None
@@ -341,9 +366,8 @@ class SignalEngine:
             (settings.SESSION_START_HOUR_UTC <= current_hour < settings.SESSION_END_HOUR_UTC)
 
         for asset in settings.ACTIVE_ASSETS:
-            signal = await self.analyze_asset(asset)
-            if signal:
-                new_signals.append(signal)
+            asset_signals = await self.analyze_asset(asset)
+            new_signals.extend(asset_signals)
 
         logger.info(
             f"[CICLO] Analizados {len(settings.ACTIVE_ASSETS)} activos -> "
@@ -432,7 +456,7 @@ class SignalEngine:
             "smc_quality": round(smc_quality, 2)
         }
 
-    def _create_signal(self, asset: str, direction: str, df: pd.DataFrame, indicators_met: int, smc_info: Optional[dict] = None, strategy_details: Optional[List[str]] = None) -> Optional[Signal]:
+    def _create_signal(self, asset: str, direction: str, df: pd.DataFrame, indicators_met: int, smc_info: Optional[dict] = None, strategy_details: Optional[List[str]] = None, strategy_id: Optional[int] = None, strategy_name: str = "") -> Optional[Signal]:
         """Create a new signal object with risk management parameters."""
         try:
             current_price = df["close"].iloc[-1]
@@ -538,6 +562,8 @@ class SignalEngine:
                 total_indicators=max(len(get_strategies_for_asset(asset)), 1),
                 score=float(indicators_met / max(len(get_strategies_for_asset(asset)), 1)),  # Normalized score (0-1: proporción de estrategias asignadas que confirmaron)
                 indicators_detail=strategy_details or [],
+                strategy_id=strategy_id,
+                strategy_name=strategy_name,
                 session=market_data_service.get_current_session(),
                 # CAMBIO CRÍTICO (causa raíz real de "sigue sin enviar
                 # señales"): aquí se pasaba `datetime.utcnow().hour` (un int,
@@ -652,22 +678,38 @@ class SignalEngine:
             logger.error(f"Error en validación de tendencia macro para {asset}: {e}")
             return False
 
-    def _has_active_signal(self, asset: str) -> bool:
-        """Check if an asset already has an active signal to avoid duplicates."""
+    def _has_active_signal(self, asset: str, strategy_id: Optional[int] = None) -> bool:
+        """
+        Check if an asset already has an active signal to avoid duplicates.
+
+        CAMBIO (a pedido del usuario, 2026-08-11 -- prueba comparativa por
+        estrategia): se agregó el parámetro opcional `strategy_id`. Cuando
+        se especifica, el chequeo es por (activo, estrategia) en vez de
+        solo por activo -- así, si la Estrategia 1 ya tiene una posición
+        abierta en EURUSD, la Estrategia 4 puede seguir generando sus
+        propias señales en EURUSD sin bloquearse por la otra. Esto es
+        necesario para poder comparar el desempeño de cada estrategia de
+        forma independiente y justa. Si se omite `strategy_id`, se
+        mantiene el comportamiento anterior (por activo, cualquier
+        estrategia).
+        """
         # 1. Check memory for currently ACTIVE signals
         for signal in self.active_signals.values():
             if signal.asset == asset and signal.status == SignalStatus.ACTIVE:
-                return True
-        
+                if strategy_id is None or signal.strategy_id == strategy_id:
+                    return True
+
         # 2. Check Excel for currently ACTIVE signals
-        if excel_manager.has_active_signal(asset):
+        if excel_manager.has_active_signal(asset, strategy_id=strategy_id):
             return True
-            
+
         # 3. ANTI-OVERTRADING: Cooldown Filter (5 minutes)
         try:
             df_signals = excel_manager.get_signals_dataframe()
             if not df_signals.empty:
                 asset_signals = df_signals[df_signals["asset"] == asset].copy()
+                if strategy_id is not None and "strategy_id" in asset_signals.columns:
+                    asset_signals = asset_signals[asset_signals["strategy_id"] == strategy_id]
                 if not asset_signals.empty:
                     asset_signals["closed_at"] = pd.to_datetime(asset_signals["closed_at"], errors="coerce")
                     last_close = asset_signals["closed_at"].max()

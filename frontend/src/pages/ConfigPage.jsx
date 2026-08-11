@@ -145,19 +145,20 @@ function ConfigPage() {
             />
           </div>
           <div>
-            <label className="block text-sm text-gray-400 mb-2">Mín. Estrategias para Señal (máx. 2 por activo)</label>
+            <label className="block text-sm text-gray-400 mb-2">Mín. Estrategias para Señal (sin efecto durante la prueba)</label>
             <input
               type="number"
               min="1"
               max="2"
               value={minIndicators}
               onChange={(e) => setMinIndicators(e.target.value)}
-              className="w-full bg-dark-400 border border-gray-700 rounded-lg px-4 py-2 text-white focus:border-primary-500 focus:outline-none"
+              disabled
+              className="w-full bg-dark-400 border border-gray-700 rounded-lg px-4 py-2 text-gray-500 cursor-not-allowed"
             />
             <p className="text-xs text-gray-500 mt-1">
-              2 = exige que ambas estrategias asignadas al activo confirmen la misma dirección (más selectivo).
-              1 = con una sola estrategia confirmada ya se activa la señal (más frecuente, menos selectivo).
-              Ver <a href="/docs" className="text-primary-400 hover:underline">Documentación de Estrategias</a>.
+              Desactivado del 11 al viernes: cada estrategia asignada a un activo genera su propia señal de
+              forma independiente en cuanto confirma (no espera a la otra) -- así se puede comparar el
+              desempeño real de cada una. Ver <a href="/docs" className="text-primary-400 hover:underline">Documentación de Estrategias</a>.
             </p>
           </div>
         </div>

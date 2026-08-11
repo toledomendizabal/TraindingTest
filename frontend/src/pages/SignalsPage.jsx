@@ -103,6 +103,7 @@ function SignalsPage() {
               <tr className="text-gray-400 border-b border-gray-700/50">
                 <th className="text-left py-3 px-3">ID</th>
                 <th className="text-left py-3 px-3">Activo</th>
+                <th className="text-left py-3 px-3">Estrategia</th>
                 <th className="text-left py-3 px-3">Dir.</th>
                 <th className="text-right py-3 px-3">Entrada</th>
                 <th className="text-right py-3 px-3">SL</th>
@@ -124,6 +125,9 @@ function SignalsPage() {
                 <tr key={idx} className="border-b border-gray-700/30 hover:bg-gray-700/20">
                   <td className="py-2 px-3 text-gray-500 font-mono text-xs">{signal.id}</td>
                   <td className="py-2 px-3 font-medium text-white">{signal.asset}</td>
+                  <td className="py-2 px-3 text-xs text-purple-300" title={signal.strategy_name}>
+                    {signal.strategy_id ? `#${signal.strategy_id} ${signal.strategy_name || ''}` : '-'}
+                  </td>
                   <td className="py-2 px-3">
                     <span className={`px-2 py-0.5 rounded text-xs font-bold ${
                       signal.direction === 'BUY'

@@ -53,6 +53,15 @@ class Signal(BaseModel):
     # app/services/strategy_engine.py ASSET_GROUPS). Se pasa explícitamente
     # desde signal_engine.py, este default solo aplica si no se especifica.
     total_indicators: int = 2
+    # CAMBIO (a pedido del usuario, 2026-08-11 -- prueba comparativa por
+    # estrategia hasta el viernes): con el motor de estrategias
+    # independientes (`strategy_engine.evaluate_independent`), cada señal
+    # ahora se origina en UNA estrategia específica, no en una mezcla de
+    # las 2 asignadas al activo. Estos dos campos identifican cuál, para
+    # poder filtrar/agrupar signals_tracking.xlsx por estrategia y comparar
+    # win rate real de cada una.
+    strategy_id: Optional[int] = None
+    strategy_name: str = ""
     score: float = 0.0
     status: SignalStatus = SignalStatus.ACTIVE
     session: str = ""  # Tokyo, London, NewYork

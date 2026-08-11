@@ -127,9 +127,30 @@ class Settings(BaseSettings):
     # TP3 bajado de 3.0R a 2.2R para que el objetivo final sea más
     # alcanzable (buscando subir el 21.9% de operaciones que llegan a TP3
     # completo), conservando una recompensa todavía sólida.
-    TP1_R_MULTIPLE: float = 0.85
-    TP2_R_MULTIPLE: float = 2.0
-    TP3_R_MULTIPLE: float = 2.2
+    # CAMBIO (a pedido del usuario, 2026-08-11 -- prueba comparativa por
+    # estrategia hasta el viernes): se pide explícitamente que las señales
+    # sean 1:3 (relación riesgo:beneficio). Se sube TP1 de 0.85R a 3.0R,
+    # y TP2/TP3 se reescalan proporcionalmente a 6R/10R -- esto además
+    # coincide exactamente con las etiquetas que el frontend
+    # (SignalsPage.jsx) ya mostraba desde antes ("TP1 (1:3)", "TP2 (1:6)",
+    # "TP3 (1:10)"), que habían quedado desincronizadas del valor real
+    # (0.85R) usado en el motor. Con este cambio, ambos vuelven a coincidir.
+    #
+    # OJO -- tensión con el hallazgo anterior (2026-07-22, ver historial
+    # arriba): con 375 trades reales, subir TP1 de 0.7R a un valor más alto
+    # ya había mostrado ser más difícil de alcanzar (<30% llegaban a TP
+    # completo con 2.2R). Subir ahora a 3R es un cambio aún más agresivo en
+    # esa misma dirección. Se aplica de todas formas porque el objetivo
+    # actual es distinto: comparar el desempeño de cada estrategia con una
+    # relación riesgo:beneficio fija y pareja (1:3) entre el 11 y el
+    # viernes, no maximizar win rate todavía. Si el resultado real de esta
+    # semana muestra que 1:3 es demasiado difícil de alcanzar (revisa
+    # signals_tracking.xlsx: % de señales que llegan a take_profit_1 vs las
+    # que cierran en stop_loss), vale la pena bajarlo de nuevo con esa
+    # evidencia fresca en mano.
+    TP1_R_MULTIPLE: float = 3.0
+    TP2_R_MULTIPLE: float = 6.0
+    TP3_R_MULTIPLE: float = 10.0
 
     # Percentage of the position closed at each take-profit level.
     # Debe sumar 100.

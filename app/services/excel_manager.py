@@ -118,7 +118,13 @@ class ExcelManager:
             # CAMBIO (fix win-rate): columnas para cierre parcial escalonado
             "initial_lot_size", "remaining_lot_size",
             "tp1_hit", "tp2_hit", "breakeven_active", "realized_partial_pnl",
-            "mt5_ticket"
+            "mt5_ticket",
+            # CAMBIO (a pedido del usuario, 2026-08-11 -- prueba comparativa
+            # por estrategia hasta el viernes): qué estrategia individual
+            # originó cada señal, para poder filtrar/agrupar y comparar win
+            # rate real por estrategia (ej. tabla dinámica en Excel por
+            # `strategy_id`).
+            "strategy_id", "strategy_name",
         ]
         df = pd.DataFrame(columns=columns)
         df.to_excel(self.signals_file, index=False, sheet_name="Signals")
@@ -212,7 +218,9 @@ class ExcelManager:
                 "tp2_hit": getattr(signal, "tp2_hit", False),
                 "breakeven_active": getattr(signal, "breakeven_active", False),
                 "realized_partial_pnl": getattr(signal, "realized_partial_pnl", 0.0),
-                "mt5_ticket": getattr(signal, "mt5_ticket", None)
+                "mt5_ticket": getattr(signal, "mt5_ticket", None),
+                "strategy_id": getattr(signal, "strategy_id", None),
+                "strategy_name": getattr(signal, "strategy_name", ""),
             }
 
             df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
@@ -422,14 +430,23 @@ class ExcelManager:
             logger.error(f"Error registering partial close in Excel: {e}")
             return False
 
-    def has_active_signal(self, asset: str) -> bool:
-        """Check if an asset has an active signal in Excel."""
+    def has_active_signal(self, asset: str, strategy_id: Optional[int] = None) -> bool:
+        """
+        Check if an asset has an active signal in Excel.
+
+        CAMBIO (a pedido del usuario, 2026-08-11): parámetro opcional
+        `strategy_id` para permitir que distintas estrategias operen el
+        mismo activo de forma independiente durante la prueba comparativa
+        (ver signal_engine._has_active_signal).
+        """
         try:
             if not os.path.exists(self.signals_file):
                 return False
 
             df = pd.read_excel(self.signals_file, sheet_name="Signals")
             active = df[(df["asset"] == asset) & (df["status"] == "ACTIVE")]
+            if strategy_id is not None and "strategy_id" in df.columns:
+                active = active[active["strategy_id"] == strategy_id]
             return len(active) > 0
 
         except Exception:
