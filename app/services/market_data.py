@@ -188,7 +188,34 @@ class MarketDataService:
         return None
 
     async def get_price(self, asset: str) -> Optional[Dict]:
-        """Get current price prioritizing MT4 then API."""
+        """
+        Get current price prioritizing MT4 then API.
+
+        CAMBIO CRÍTICO (fix, 2026-08-12 -- "las operaciones no se están
+        cerrando"): este método NO tenía el mismo cortacircuito de cuota
+        diaria ni el cooldown por símbolo que se agregó a
+        `get_time_series()` el 2026-08-10. La diferencia es crítica porque
+        `position_monitor._check_positions()` llama a `get_price()` en un
+        LOOP DE 1 SEGUNDO para cada señal activa -- si un activo sin
+        archivo MT4 (los 19 nuevos, mientras no se agreguen a Market
+        Watch) llega aquí, `_wait_for_rate_limit()` puede bloquear hasta
+        ~60s esperando un cupo, y lo hace dentro de `self._rate_lock`,
+        que es EL MISMO lock que usa `get_time_series()`. Con varias
+        señales activas en activos sin MT4, el monitor de posiciones podía
+        quedarse minutos enteros esperando turno de rate-limit -- durante
+        ese tiempo, NINGUNA posición (ni siquiera las de activos que sí
+        tienen datos) se evalúa contra su SL/TP, así que no se cierran a
+        tiempo aunque el precio ya lo haya alcanzado hace rato. Y una vez
+        agotado el crédito diario (confirmado en logs anteriores: ~800
+        créditos consumidos a media mañana), esto se repetía cada segundo
+        sin ningún corte, indefinidamente.
+
+        Se aplica aquí el mismo mecanismo que en `get_time_series()`:
+        cooldown por símbolo tras un fallo reciente + corte total si ya se
+        agotó el crédito diario, ANTES de siquiera intentar el rate
+        limiter -- así el monitor de posiciones no se traba esperando un
+        precio que muy probablemente no va a llegar.
+        """
         mt4_price = self._get_mt4_price(asset)
         if mt4_price:
             self._price_cache[asset] = mt4_price
@@ -198,6 +225,18 @@ class MarketDataService:
         cached = self.get_cached_price(asset)
         if cached:
             return cached
+
+        price_cache_key = f"{asset}_price"
+        now = datetime.now()
+
+        if self._quota_exhausted_until and now < self._quota_exhausted_until:
+            logger.debug(f"[TWELVE_DATA] Crédito diario agotado hasta {self._quota_exhausted_until.isoformat()} -- se omite get_price para {asset}.")
+            return self._price_cache.get(asset)
+
+        last_failed = self._failed_lookup_at.get(price_cache_key)
+        if last_failed and (now - last_failed).total_seconds() < self.FAILED_LOOKUP_COOLDOWN_SECONDS:
+            logger.debug(f"[TWELVE_DATA] {asset} (price): en cooldown tras fallo reciente, se omite este ciclo.")
+            return self._price_cache.get(asset)
 
         try:
             await self._wait_for_rate_limit()
@@ -221,10 +260,25 @@ class MarketDataService:
                     self._price_cache[asset] = price_data
                     self._last_update[asset] = datetime.now()
                     return price_data
-            
+                else:
+                    logger.warning(f"[TWELVE_DATA] {asset} ({symbol}) price: respuesta sin 'price' -- {data.get('message', data)}")
+                    self._failed_lookup_at[price_cache_key] = now
+            elif response.status_code == 429:
+                body_text = response.text[:300]
+                logger.warning(f"[TWELVE_DATA] {asset} ({symbol}) price: HTTP 429 -- {body_text}")
+                self._failed_lookup_at[price_cache_key] = now
+                if "run out of api credits" in body_text.lower() or "credits for the day" in body_text.lower():
+                    tomorrow_utc = (datetime.utcnow() + pd.Timedelta(days=1)).replace(hour=0, minute=5, second=0, microsecond=0)
+                    self._quota_exhausted_until = tomorrow_utc
+                    logger.error(f"[TWELVE_DATA] Crédito diario agotado -- se suspenden TODAS las llamadas (precio e historial) hasta {tomorrow_utc.isoformat()} UTC.")
+            else:
+                logger.warning(f"[TWELVE_DATA] {asset} ({symbol}) price: HTTP {response.status_code} -- {response.text[:200]}")
+                self._failed_lookup_at[price_cache_key] = now
+
             return self._price_cache.get(asset)
         except Exception as e:
             logger.error(f"API price failed for {asset}: {e}")
+            self._failed_lookup_at[price_cache_key] = now
             return self._price_cache.get(asset)
 
     async def get_time_series(
