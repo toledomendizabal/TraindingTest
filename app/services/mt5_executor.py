@@ -126,10 +126,59 @@ class MT5ExecutorService:
             self._connected = False
             logger.info("MT5 desconectado.")
 
+    def is_connected_live(self) -> bool:
+        """
+        CAMBIO (a pedido del usuario, 2026-08-12 -- "que el motor de
+        conexión con MT5 siga operable"): antes, `_ensure_connected()`
+        solo miraba la bandera interna `self._connected` (un bool en
+        memoria) -- si la terminal MT5 se desconectaba por su cuenta (caída
+        de red, reinicio de la terminal, sesión expirada del bróker), esa
+        bandera se quedaba en `True` para siempre y el sistema asumía que
+        todo seguía bien, sin volver a intentar reconectar jamás hasta que
+        el proceso de Python se reiniciara por completo. Resultado: las
+        señales se seguían generando con normalidad, pero
+        `mt5.order_send()` fallaba en silencio (o con errores poco claros)
+        indefinidamente.
+
+        Este método SÍ verifica el estado real de la conexión contra la
+        terminal (no solo la bandera en memoria), llamando a
+        `mt5.terminal_info()` -- que solo devuelve datos válidos si la
+        terminal sigue efectivamente conectada al servidor del bróker.
+        """
+        if not MT5_AVAILABLE or not self._connected:
+            return False
+        try:
+            info = mt5.terminal_info()
+            return info is not None and bool(getattr(info, "connected", False))
+        except Exception as e:
+            logger.warning(f"MT5: error verificando estado de conexión: {e}")
+            return False
+
     def _ensure_connected(self) -> bool:
-        if not self._connected:
-            return self.connect()
-        return True
+        # CAMBIO (fix, 2026-08-12): ya no confía ciegamente en
+        # `self._connected` -- verifica la conexión real y reconecta si
+        # hace falta (ver `is_connected_live`).
+        if self.is_connected_live():
+            return True
+        logger.info("MT5: conexión no activa o perdida, reconectando...")
+        self._connected = False
+        return self.connect()
+
+    def health_check(self) -> bool:
+        """
+        CAMBIO (a pedido del usuario, 2026-08-12): chequeo proactivo de
+        conectividad, pensado para llamarse periódicamente desde
+        `scheduler.py` (cada pocos minutos) en vez de esperar a que una
+        señal necesite abrir una operación para descubrir que la conexión
+        se había caído. Si `MT5_LIVE_TRADING_ENABLED` es False, no hace
+        nada (comportamiento normal en modo "solo señales").
+        """
+        if not settings.MT5_LIVE_TRADING_ENABLED or not MT5_AVAILABLE:
+            return False
+        if self.is_connected_live():
+            return True
+        logger.warning("MT5: chequeo de salud detectó conexión caída -- reconectando...")
+        return self.connect()
 
     # ------------------------------------------------------------------
     # Resolución de símbolo

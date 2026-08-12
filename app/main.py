@@ -46,6 +46,25 @@ async def lifespan(app: FastAPI):
     logger.info(f"Active assets: {settings.ACTIVE_ASSETS}")
     logger.info(f"Capital: ${settings.INITIAL_CAPITAL}")
     logger.info(f"Risk: {settings.RISK_PERCENTAGE}%")
+    # CAMBIO (a pedido del usuario, 2026-08-12): verificación de
+    # persistencia al arrancar -- confirma que las señales que estaban
+    # ACTIVE en Excel antes de este arranque (por ejemplo, tras un
+    # reinicio programado cada 12h, ver scheduler._scheduled_restart) se
+    # recargaron correctamente en memoria, y deja un log con el conteo de
+    # señales activas y pendientes de confirmar. Se llama aquí (antes de
+    # "System ready") además de la verificación periódica que ya agenda
+    # el scheduler, para tener constancia clara en el log desde el primer
+    # segundo de cada arranque.
+    from app.services.signal_engine import signal_engine
+    signal_engine.verify_persistence()
+
+    # CAMBIO (a pedido del usuario, 2026-08-12): intento de conexión con
+    # MT5 al arrancar (si MT5_LIVE_TRADING_ENABLED está activo), en vez de
+    # esperar a que la primera señal necesite abrir una operación para
+    # descubrir si la conexión funciona.
+    from app.services.mt5_executor import mt5_executor
+    mt5_executor.health_check()
+
     logger.info("System ready!")
 
     yield

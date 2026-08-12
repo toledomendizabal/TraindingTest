@@ -243,6 +243,38 @@ class Settings(BaseSettings):
     #           "STOXX50Cash": "STOXX50"}
     MT_SYMBOL_ALIASES: dict = {}
 
+    # --- Reinicio programado del proceso + keep-alive de MT5 ---
+    # CAMBIO (a pedido del usuario, 2026-08-12): reinicio limpio cada N
+    # horas (por defecto 12) para evitar degradación acumulada de un
+    # proceso de larga duración (fugas de memoria, conexiones colgadas,
+    # estado interno desincronizado). Ver scheduler._scheduled_restart.
+    #
+    # PROCESS_RESTART_MODE:
+    #   "self_exec"  (default): el propio proceso se relanza a sí mismo
+    #                con os.execv() usando el mismo comando con el que se
+    #                inició -- no requiere ningún supervisor externo
+    #                (systemd, NSSM, pm2, Task Scheduler, etc.). Es el modo
+    #                más simple si corres el backend "a mano" o con un
+    #                script batch simple.
+    #   "exit_only": el proceso solo hace un shutdown limpio y termina
+    #                (sys.exit(0)) -- USA ESTE MODO si ya tienes un
+    #                supervisor externo configurado para reiniciar el
+    #                proceso automáticamente cuando termina (recomendado
+    #                para producción: es más robusto que el auto-relanzado
+    #                interno, que puede tener problemas liberando el
+    #                puerto/sockets en algunos entornos). Si el proceso
+    #                termina y NADA lo reinicia, el backend se queda
+    #                apagado hasta que alguien lo note -- confirma que
+    #                tienes un supervisor antes de usar este modo.
+    PROCESS_RESTART_INTERVAL_HOURS: float = float(os.getenv("PROCESS_RESTART_INTERVAL_HOURS", "12"))
+    PROCESS_RESTART_MODE: str = os.getenv("PROCESS_RESTART_MODE", "self_exec")
+
+    # Chequeo de salud de la conexión MT5 (reconecta si se cayó), en minutos.
+    MT5_HEALTH_CHECK_INTERVAL_MINUTES: int = int(os.getenv("MT5_HEALTH_CHECK_INTERVAL_MINUTES", "5"))
+
+    # Verificación de persistencia (señales activas en memoria vs Excel), en minutos.
+    PERSISTENCE_CHECK_INTERVAL_MINUTES: int = int(os.getenv("PERSISTENCE_CHECK_INTERVAL_MINUTES", "30"))
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

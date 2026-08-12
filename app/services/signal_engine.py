@@ -729,6 +729,77 @@ class SignalEngine:
         """Get all active signals from memory."""
         return [s for s in self.active_signals.values() if s.status == SignalStatus.ACTIVE]
 
+    def verify_persistence(self) -> dict:
+        """
+        CAMBIO (a pedido del usuario, 2026-08-12 -- "verifica la
+        persistencia en monitorear... las operaciones que se encuentran
+        activas"): comprueba que lo que hay en memoria
+        (`self.active_signals`) coincida con lo que hay realmente
+        registrado como ACTIVE en `signals_tracking.xlsx`. Pensado para
+        llamarse (1) al arrancar el proceso (en el lifespan de
+        `main.py`), (2) justo después de cada reinicio programado (ver
+        `scheduler._scheduled_restart`), y (3) periódicamente como chequeo
+        de salud.
+
+        Si alguna vez vuelve a aparecer una discrepancia (señales ACTIVE
+        en Excel que no están en memoria, tal como pasó con el bug de
+        `Signal.from_dict` documentado en `app/models/signal.py`), este
+        método las recarga automáticamente y deja un log bien visible en
+        vez de fallar en silencio.
+
+        También reporta cuántas señales "por confirmar" hay pendientes en
+        `senales_por_confirmar.xlsx` -- ese archivo no depende de estado en
+        memoria (se lee fresco en cada ciclo desde
+        `pending_signals_monitor.check_pending_signals`), así que
+        sobrevive un reinicio sin ningún cambio adicional; se reporta aquí
+        solo para que quede visible en el mismo log de verificación.
+        """
+        report = {
+            "active_in_memory": 0,
+            "active_in_excel": 0,
+            "orphaned_recovered": 0,
+            "pending_confirmations": 0,
+            "ok": True,
+        }
+        try:
+            in_memory = self.get_active_signals()
+            report["active_in_memory"] = len(in_memory)
+            memory_ids = {s.id for s in in_memory}
+
+            excel_active = excel_manager.get_active_signals()
+            report["active_in_excel"] = len(excel_active)
+
+            orphaned = [rec for rec in excel_active if rec.get("id") not in memory_ids]
+            if orphaned:
+                logger.warning(
+                    f"[PERSISTENCIA] {len(orphaned)} señal(es) ACTIVE en Excel no estaban "
+                    f"cargadas en memoria -- recargando automáticamente para no perder su "
+                    f"monitoreo de SL/TP."
+                )
+                for rec in orphaned:
+                    try:
+                        sig = Signal.from_dict(rec)
+                        self.active_signals[sig.id] = sig
+                        report["orphaned_recovered"] += 1
+                    except Exception as e:
+                        logger.error(f"[PERSISTENCIA] No se pudo recuperar la señal huérfana {rec.get('id')}: {e}")
+                        report["ok"] = False
+
+            pending_rows = excel_manager.get_open_pending_signals()
+            report["pending_confirmations"] = len(pending_rows)
+
+            logger.info(
+                f"[PERSISTENCIA] Verificación completa: {report['active_in_memory']} señal(es) "
+                f"activa(s) en memoria, {report['active_in_excel']} en Excel "
+                f"({report['orphaned_recovered']} recuperada(s) de más), "
+                f"{report['pending_confirmations']} señal(es) por confirmar pendiente(s)."
+            )
+        except Exception as e:
+            logger.error(f"[PERSISTENCIA] Error durante la verificación: {e}")
+            report["ok"] = False
+
+        return report
+
 
 # Singleton instance
 signal_engine = SignalEngine()
