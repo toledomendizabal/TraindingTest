@@ -163,6 +163,20 @@ def _detect_choch(df: pd.DataFrame, lookback: int = 20) -> Optional[str]:
     Change of Character simplificado: compara el último swing high/low
     roto por CUERPO de vela (no mecha) contra la estructura previa.
     Retorna "BULLISH", "BEARISH" o None.
+
+    CAMBIO (fix win-rate, 2026-08-19 -- Estrategia 1 "Silver Bullet" tuvo
+    28.6% win rate sobre 42 señales reales, mejorable): se encontraron 2
+    debilidades reales en esta función:
+    1. `was_bearish_structure` / `was_bullish_structure` se calculaban
+       pero NUNCA se usaban en la condición final -- cualquier cierre de
+       cuerpo más allá del máximo/mínimo previo contaba como "CHoCH", sin
+       verificar que de verdad hubiera existido una estructura contraria
+       previa que se estuviera revirtiendo (lo que en la práctica lo
+       acercaba más a "cualquier ruptura de rango" que a un cambio de
+       carácter real). Ahora sí se exige la estructura previa.
+    2. No había margen mínimo de ruptura -- un cierre apenas 1 punto más
+       allá del máximo/mínimo previo calificaba igual que uno claramente
+       decisivo. Se agrega un margen mínimo de 0.05% del precio.
     """
     if len(df) < lookback + 5:
         return None
@@ -177,14 +191,17 @@ def _detect_choch(df: pd.DataFrame, lookback: int = 20) -> Optional[str]:
     prior_low = lows[:-3].min()
     last_close = closes[-1]
     last_open = opens[-1]
+    margin = 0.0005 * last_close  # 0.05% del precio
 
     # CHoCH alcista: el cuerpo de una vela cierra por encima del último
     # máximo relevante tras una fase bajista (mínimos decrecientes previos).
-    was_bearish_structure = lows[-6:-3].min() < lows[:-6].min() if len(lows) > 9 else False
-    if last_close > prior_high and last_close > last_open:
+    was_bearish_structure = lows[-6:-3].min() < lows[:-6].min() if len(lows) > 9 else True
+    was_bullish_structure = highs[-6:-3].max() > highs[:-6].max() if len(highs) > 9 else True
+
+    if last_close > prior_high + margin and last_close > last_open and was_bearish_structure:
         return "BULLISH"
     # CHoCH bajista: cierre de cuerpo por debajo del último mínimo relevante.
-    if last_close < prior_low and last_close < last_open:
+    if last_close < prior_low - margin and last_close < last_open and was_bullish_structure:
         return "BEARISH"
     return None
 
@@ -315,51 +332,120 @@ def _strategy_3_amd_asian_range(df: pd.DataFrame) -> Optional[Dict]:
 
 
 def _strategy_4_breakout(df: pd.DataFrame) -> Optional[Dict]:
-    """Ruptura de rango con expansión de rango real (proxy de volumen institucional)."""
+    """
+    Ruptura de rango con expansión de rango real (proxy de volumen institucional).
+
+    CAMBIO (fix win-rate, 2026-08-19 -- ya era la 2da mejor estrategia por
+    P/L real, +$288 en 32 señales, 31.2% WR; se ajusta levemente para
+    subir la calidad): el multiplicador de expansión de rango sube de
+    1.3x a 1.6x el promedio -- exige una ruptura más decisiva, con menos
+    falsas rupturas de bajo impulso.
+    """
     if len(df) < 30:
         return None
     recent_range = df["high"].iloc[-20:-1].max() - df["low"].iloc[-20:-1].min()
     last_candle_range = df["high"].iloc[-1] - df["low"].iloc[-1]
     breakout_up = df["close"].iloc[-1] > df["high"].iloc[-20:-1].max()
     breakout_down = df["close"].iloc[-1] < df["low"].iloc[-20:-1].min()
-    strong_range = last_candle_range > 1.3 * (recent_range / 20 if recent_range else 0)
+    strong_range = last_candle_range > 1.6 * (recent_range / 20 if recent_range else 0)
     if breakout_up and strong_range:
-        return {"direction": "BUY", "detail": "Ruptura alcista de rango con expansión"}
+        return {"direction": "BUY", "detail": "Ruptura alcista de rango con expansión fuerte"}
     if breakout_down and strong_range:
-        return {"direction": "SELL", "detail": "Ruptura bajista de rango con expansión"}
+        return {"direction": "SELL", "detail": "Ruptura bajista de rango con expansión fuerte"}
     return None
 
 
 def _strategy_5_ema_pullback(df: pd.DataFrame) -> Optional[Dict]:
-    """Pullback a EMA20/50 dentro de una tendencia definida por EMA200."""
+    """
+    Pullback a EMA20/50 dentro de una tendencia definida por EMA200.
+
+    CAMBIO (fix win-rate, 2026-08-19 -- análisis de 198 señales reales del
+    11 al 19/08): esta fue la estrategia con MÁS volumen (72 señales) y el
+    ÚNICO resultado neto negativo (-$24.46, 20.8% win rate) de las 7
+    estrategias con datos suficientes -- arrastraba el win rate general del
+    sistema (25.1%) hacia abajo más que ninguna otra. La causa más
+    probable: el criterio original ("precio a menos de 0.15% de la EMA20")
+    es demasiado permisivo -- se cumple constantemente en mercados en
+    rango/choppy, sin exigir que haya existido un pullback real ni una
+    tendencia con fuerza mínima. Se agregan 3 filtros adicionales:
+
+    1. Pullback genuino: el precio debe haberse alejado de la EMA20 al
+       menos 0.35% en los últimos 10 velas antes de volver a acercarse
+       ahora -- sin esto, "estar cerca de la EMA" no distingue un
+       pullback real de simplemente estar pegado al promedio en un rango.
+    2. Vela de confirmación: la última vela debe cerrar en la dirección de
+       la tendencia (cuerpo alcista para BUY, bajista para SELL) -- filtra
+       entradas donde el precio toca la EMA pero sigue indeciso.
+    3. Fuerza mínima de tendencia: la separación entre EMA50 y EMA200 debe
+       ser de al menos 0.08% del precio -- filtra "tendencias" casi planas
+       donde el cruce EMA50/EMA200 es apenas perceptible.
+    4. Proximidad más estricta: de 0.15% a 0.10%.
+
+    Con esto se espera bajar la frecuencia de señales de esta estrategia
+    de forma notable a cambio de mayor calidad -- monitorear el nuevo win
+    rate real durante al menos una semana antes de ajustar de nuevo.
+    """
     if len(df) < 210:
         return None
     ema20 = _ema(df["close"], 20)
     ema50 = _ema(df["close"], 50)
     ema200 = _ema(df["close"], 200)
     price = float(df["close"].iloc[-1])
+    last = df.iloc[-1]
+
     trend_up = ema50.iloc[-1] > ema200.iloc[-1]
     trend_down = ema50.iloc[-1] < ema200.iloc[-1]
-    near_ema = abs(price - ema20.iloc[-1]) / price < 0.0015
-    if trend_up and near_ema and price > ema200.iloc[-1]:
-        return {"direction": "BUY", "detail": "Pullback a EMA20 en tendencia alcista (EMA50>EMA200)"}
-    if trend_down and near_ema and price < ema200.iloc[-1]:
-        return {"direction": "SELL", "detail": "Pullback a EMA20 en tendencia bajista (EMA50<EMA200)"}
+
+    trend_strength = abs(ema50.iloc[-1] - ema200.iloc[-1]) / price
+    strong_trend = trend_strength >= 0.0008  # 0.08%
+
+    near_ema = abs(price - ema20.iloc[-1]) / price < 0.0010  # antes 0.0015
+
+    # Pullback genuino: en las últimas 10 velas (sin contar la actual),
+    # el precio debe haber estado a >=0.35% de la EMA20 en algún momento.
+    recent_dist = (df["close"].iloc[-11:-1] - ema20.iloc[-11:-1]).abs() / df["close"].iloc[-11:-1]
+    had_real_pullback = bool((recent_dist >= 0.0035).any())
+
+    confirm_bullish = last["close"] > last["open"]
+    confirm_bearish = last["close"] < last["open"]
+
+    if trend_up and near_ema and strong_trend and had_real_pullback and confirm_bullish and price > ema200.iloc[-1]:
+        return {"direction": "BUY", "detail": "Pullback confirmado a EMA20 en tendencia alcista fuerte (EMA50>EMA200)"}
+    if trend_down and near_ema and strong_trend and had_real_pullback and confirm_bearish and price < ema200.iloc[-1]:
+        return {"direction": "SELL", "detail": "Pullback confirmado a EMA20 en tendencia bajista fuerte (EMA50<EMA200)"}
     return None
 
 
 def _strategy_6_ema_crossover(df: pd.DataFrame) -> Optional[Dict]:
-    """Cruce reciente de EMA rápida sobre lenta (cambio de fase de momento)."""
-    if len(df) < 55:
+    """
+    Cruce reciente de EMA rápida sobre lenta (cambio de fase de momento).
+
+    CAMBIO (fix win-rate, 2026-08-19 -- datos reales: 0% win rate en 5
+    señales, -$91.28, el peor resultado de las 7 estrategias con datos):
+    un cruce simple de EMAs sin filtro de tendencia es clásicamente
+    propenso a "whipsaws" (falsas señales) en mercados laterales -- se
+    agrega un filtro de tendencia de fondo con EMA100: solo se toma el
+    cruce alcista si el precio ya está por encima de la EMA100 (evita
+    comprar cruces alcistas en medio de una tendencia bajista mayor), y
+    simétricamente para el cruce bajista. La muestra es pequeña (n=5), así
+    que este cambio debe evaluarse con más datos antes de sacar
+    conclusiones definitivas -- pero la teoría (evitar contra-tendencia)
+    y el resultado observado apuntan en la misma dirección.
+    """
+    if len(df) < 105:
         return None
     fast = _ema(df["close"], 9)
     slow = _ema(df["close"], 21)
+    trend_filter = _ema(df["close"], 100)
+    price = float(df["close"].iloc[-1])
+
     cross_up = fast.iloc[-2] <= slow.iloc[-2] and fast.iloc[-1] > slow.iloc[-1]
     cross_down = fast.iloc[-2] >= slow.iloc[-2] and fast.iloc[-1] < slow.iloc[-1]
-    if cross_up:
-        return {"direction": "BUY", "detail": "Cruce alcista EMA9/EMA21"}
-    if cross_down:
-        return {"direction": "SELL", "detail": "Cruce bajista EMA9/EMA21"}
+
+    if cross_up and price > trend_filter.iloc[-1]:
+        return {"direction": "BUY", "detail": "Cruce alcista EMA9/EMA21 con tendencia de fondo (>EMA100)"}
+    if cross_down and price < trend_filter.iloc[-1]:
+        return {"direction": "SELL", "detail": "Cruce bajista EMA9/EMA21 con tendencia de fondo (<EMA100)"}
     return None
 
 
@@ -546,6 +632,26 @@ def _strategy_17_vsa(df: pd.DataFrame) -> Optional[Dict]:
 
 
 def _strategy_18_dynamic_sr(df: pd.DataFrame) -> Optional[Dict]:
+    """
+    CAMBIO (fix win-rate, 2026-08-19 -- datos reales: peor win rate de
+    las 7 estrategias con datos suficientes, 16.1% sobre 31 señales,
+    concentrado en EURJPY con 0% sobre 8 señales): el criterio original
+    solo exigía "precio cerca de la línea de tendencia + liquidez", sin
+    verificar que la pendiente fuera realmente significativa (una
+    regresión casi plana igual "califica" como línea de tendencia) ni que
+    hubiera una vela de rechazo real en el toque -- se agregan ambos
+    filtros:
+
+    1. Pendiente mínima significativa: la línea debe moverse al menos
+       0.05% del precio por vela en el rango de 40 velas -- filtra
+       "tendencias" casi horizontales que no representan una estructura
+       real.
+    2. Vela de rechazo en el toque: para el rebote alcista, la vela
+       actual debe tener mecha inferior >= a su cuerpo (rechazo real del
+       nivel); para el bajista, mecha superior >= cuerpo. Sin esto, se
+       podía disparar con una vela que simplemente "pasaba por ahí" sin
+       ninguna reacción visible en el nivel.
+    """
     if len(df) < 40:
         return None
     # Línea de tendencia dinámica simplificada vía regresión lineal sobre
@@ -558,13 +664,26 @@ def _strategy_18_dynamic_sr(df: pd.DataFrame) -> Optional[Dict]:
     except Exception:
         return None
     price = float(df["close"].iloc[-1])
+    last = df.iloc[-1]
+    body = abs(last["close"] - last["open"])
+    upper_wick = last["high"] - max(last["close"], last["open"])
+    lower_wick = min(last["close"], last["open"]) - last["low"]
+
     trend_low_now = slope_low * (len(window) - 1) + intercept_low
     trend_high_now = slope_high * (len(window) - 1) + intercept_high
     liquidity = indicator_service.detect_liquidity(df)
-    if slope_low > 0 and abs(price - trend_low_now) / price < 0.0015 and liquidity["SSL"]:
-        return {"direction": "BUY", "detail": "Rebote en línea de tendencia alcista con liquidez"}
-    if slope_high < 0 and abs(price - trend_high_now) / price < 0.0015 and liquidity["BSL"]:
-        return {"direction": "SELL", "detail": "Rebote en línea de tendencia bajista con liquidez"}
+
+    min_slope = 0.0005 * price  # 0.05% del precio por vela
+
+    rejection_bullish = lower_wick >= body
+    rejection_bearish = upper_wick >= body
+
+    if (slope_low > min_slope and abs(price - trend_low_now) / price < 0.0015
+            and liquidity["SSL"] and rejection_bullish):
+        return {"direction": "BUY", "detail": "Rebote confirmado (rechazo) en línea de tendencia alcista significativa, con liquidez"}
+    if (slope_high < -min_slope and abs(price - trend_high_now) / price < 0.0015
+            and liquidity["BSL"] and rejection_bearish):
+        return {"direction": "SELL", "detail": "Rebote confirmado (rechazo) en línea de tendencia bajista significativa, con liquidez"}
     return None
 
 
