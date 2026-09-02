@@ -35,6 +35,7 @@ esos sistemas se necesita correr MT5 bajo Wine o usar un servidor/VM
 Windows dedicado donde sí corra este backend).
 """
 from typing import Optional
+import time
 from loguru import logger
 
 from app.core.config import settings
@@ -332,6 +333,64 @@ class MT5ExecutorService:
     # ------------------------------------------------------------------
     # Apertura de posición
     # ------------------------------------------------------------------
+    def _reconcile_possible_ghost_fill(self, symbol: str, expected_comment: str) -> Optional[int]:
+        """
+        CAMBIO CRÍTICO (fix, 2026-08-29 -- análisis cruzado de
+        signals_tracking.xlsx contra el reporte real de MT5,
+        ReportHistory-110537430.xlsx): se encontraron 9 señales que
+        nuestro propio log marcó como "la orden real NO pudo enviarse al
+        bróker" -- pero que en el reporte REAL de MT5 sí aparecen como
+        posiciones abiertas y cerradas con normalidad, con el comentario
+        exacto `TSPro-{signal.id}` que nosotros mismos les pusimos (ej.
+        señal `c99d230c` en EURGBP, ticket real 10141863365, -$37.50).
+
+        Esto es un problema clásico de "ack perdido": `mt5.order_send()`
+        puede devolver `None` o un error de timeout/conexión aunque el
+        bróker SÍ haya procesado la orden del lado del servidor -- la
+        respuesta se pierde en el camino, pero la operación ya existe.
+        Antes, cuando esto pasaba, dábamos la señal por perdida (sin
+        ticket, sin gestión de cierre parcial/breakeven) mientras en la
+        vida real SÍ había una posición real abierta y sin supervisión
+        de nuestro lado -- justo el síntoma reportado: "solo algunas
+        operaciones se manifiestan en MetaTrader 5" (en realidad SÍ se
+        manifestaban casi todas, pero nuestro propio sistema las daba por
+        fallidas y dejaba de rastrearlas).
+
+        Antes de rendirse, se busca en las posiciones abiertas actuales
+        del símbolo una que tenga EXACTAMENTE el comentario que le
+        pusimos a esta señal -- si aparece, es la "ghost fill": se
+        recupera su ticket real en vez de perderla.
+        """
+        try:
+            positions = mt5.positions_get(symbol=symbol)
+            if positions:
+                for p in positions:
+                    if p.comment == expected_comment:
+                        logger.warning(
+                            f"MT5: se recuperó un 'ghost fill' -- la orden para {symbol} había "
+                            f"parecido fallar (timeout/sin respuesta), pero SÍ existe una posición "
+                            f"real abierta con ticket={p.ticket} y el comentario esperado "
+                            f"'{expected_comment}'. Se recupera su seguimiento."
+                        )
+                        return p.ticket
+
+            # Puede que el fill del bróker todavía no se refleje en el
+            # instante exacto del timeout -- un segundo reintento breve
+            # tras una pausa corta antes de darse por vencido de verdad.
+            time.sleep(1.5)
+            positions = mt5.positions_get(symbol=symbol)
+            if positions:
+                for p in positions:
+                    if p.comment == expected_comment:
+                        logger.warning(
+                            f"MT5: se recuperó un 'ghost fill' (2do intento, tras pausa) para "
+                            f"{symbol} -- ticket={p.ticket}, comentario '{expected_comment}'."
+                        )
+                        return p.ticket
+        except Exception as e:
+            logger.error(f"MT5: error al verificar 'ghost fill' para {symbol}: {e}")
+        return None
+
     def open_position(self, signal: Signal) -> Optional[int]:
         """
         Abre una posición de mercado replicando la señal generada.
@@ -388,15 +447,22 @@ class MT5ExecutorService:
         # CAMBIO CRÍTICO (fix, 2026-08-19): antes se mandaba SIEMPRE
         # ORDER_FILLING_IOC hardcodeado -- causa del 78% de los rechazos
         # reales ("Unsupported filling mode"). Ver `_send_order_with_filling_retry`.
+        expected_comment = f"TSPro-{signal.id}"[:31]
         result = self._send_order_with_filling_retry(request, symbol)
         if result is None:
             logger.error(f"MT5: order_send devolvió None para {signal.asset}: {mt5.last_error()}")
+            recovered = self._reconcile_possible_ghost_fill(symbol, expected_comment)
+            if recovered:
+                return recovered
             return None
         if result.retcode != mt5.TRADE_RETCODE_DONE:
             logger.error(
                 f"MT5: orden rechazada para {signal.asset} "
                 f"(retcode={result.retcode}, {result.comment})"
             )
+            recovered = self._reconcile_possible_ghost_fill(symbol, expected_comment)
+            if recovered:
+                return recovered
             return None
 
         logger.info(

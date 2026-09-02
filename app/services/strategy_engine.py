@@ -171,12 +171,20 @@ def _detect_choch(df: pd.DataFrame, lookback: int = 20) -> Optional[str]:
        pero NUNCA se usaban en la condición final -- cualquier cierre de
        cuerpo más allá del máximo/mínimo previo contaba como "CHoCH", sin
        verificar que de verdad hubiera existido una estructura contraria
-       previa que se estuviera revirtiendo (lo que en la práctica lo
-       acercaba más a "cualquier ruptura de rango" que a un cambio de
-       carácter real). Ahora sí se exige la estructura previa.
-    2. No había margen mínimo de ruptura -- un cierre apenas 1 punto más
-       allá del máximo/mínimo previo calificaba igual que uno claramente
-       decisivo. Se agrega un margen mínimo de 0.05% del precio.
+       previa que se estuviera revirtiendo. Ahora sí se exige la
+       estructura previa.
+    2. No había margen mínimo de ruptura. Se agrega un margen mínimo.
+
+    CAMBIO CRÍTICO (fix regresión, 2026-08-29): la versión del 19/08 (con
+    `was_bearish_structure = lows[-6:-3].min() < lows[:-6].min()`, exigir
+    que el mínimo reciente sea MENOR que el mínimo de TODA la ventana
+    anterior) resultó demasiado estricta -- medido empíricamente, disparaba
+    en apenas 0.030% de las velas, y en despliegue real generó CERO
+    señales en una semana completa (21-28/08). Se relaja a una condición
+    de estructura previa más laxa (con tolerancia de 0.05%) y un lookback
+    más amplio (10 en vez de 6 velas para el tramo "reciente"), calibrado
+    para ~3.3% de las velas -- similar en espíritu a la validación de
+    estructura de las otras estrategias, sin apagar la estrategia entera.
     """
     if len(df) < lookback + 5:
         return None
@@ -191,12 +199,12 @@ def _detect_choch(df: pd.DataFrame, lookback: int = 20) -> Optional[str]:
     prior_low = lows[:-3].min()
     last_close = closes[-1]
     last_open = opens[-1]
-    margin = 0.0005 * last_close  # 0.05% del precio
+    margin = 0.0002 * last_close  # 0.02% del precio (antes 0.05%)
 
     # CHoCH alcista: el cuerpo de una vela cierra por encima del último
-    # máximo relevante tras una fase bajista (mínimos decrecientes previos).
-    was_bearish_structure = lows[-6:-3].min() < lows[:-6].min() if len(lows) > 9 else True
-    was_bullish_structure = highs[-6:-3].max() > highs[:-6].max() if len(highs) > 9 else True
+    # máximo relevante tras una fase bajista previa (con tolerancia).
+    was_bearish_structure = lows[-10:-3].min() <= lows[:-10].min() * 1.0005 if len(lows) > 13 else True
+    was_bullish_structure = highs[-10:-3].max() >= highs[:-10].max() * 0.9995 if len(highs) > 13 else True
 
     if last_close > prior_high + margin and last_close > last_open and was_bearish_structure:
         return "BULLISH"
@@ -291,13 +299,21 @@ def _rsi(series: pd.Series, period: int = 14) -> pd.Series:
 # 3. LAS 18 ESTRATEGIAS (cada una retorna None o dict con direction/detail)
 # ======================================================================
 def _strategy_1_silver_bullet(df: pd.DataFrame) -> Optional[Dict]:
-    """Toma de liquidez (sweep) + CHoCH inmediato en la misma zona."""
+    """
+    Toma de liquidez (sweep) + CHoCH inmediato en la misma zona.
+
+    CAMBIO (fix regresión, 2026-08-29): se amplía la ventana de liquidez
+    de las últimas 3 velas a las últimas 5, y se agrega una tolerancia de
+    0.1% -- coherente con el mismo recalibrado de `_detect_choch` (ver ahí
+    el detalle de por qué la versión anterior apagó la estrategia por
+    completo en una semana real de pruebas).
+    """
     liquidity = indicator_service.detect_liquidity(df)
     choch = _detect_choch(df)
     last_close = float(df["close"].iloc[-1])
-    if choch == "BULLISH" and liquidity["SSL"] and min(liquidity["SSL"][-3:]) < df["low"].iloc[-6:].min():
+    if choch == "BULLISH" and liquidity["SSL"] and min(liquidity["SSL"][-5:]) < df["low"].iloc[-10:].min() * 1.001:
         return {"direction": "BUY", "detail": "Barrido de SSL + CHoCH alcista"}
-    if choch == "BEARISH" and liquidity["BSL"] and max(liquidity["BSL"][-3:]) > df["high"].iloc[-6:].max():
+    if choch == "BEARISH" and liquidity["BSL"] and max(liquidity["BSL"][-5:]) > df["high"].iloc[-10:].max() * 0.999:
         return {"direction": "SELL", "detail": "Barrido de BSL + CHoCH bajista"}
     return None
 
@@ -362,28 +378,24 @@ def _strategy_5_ema_pullback(df: pd.DataFrame) -> Optional[Dict]:
     CAMBIO (fix win-rate, 2026-08-19 -- análisis de 198 señales reales del
     11 al 19/08): esta fue la estrategia con MÁS volumen (72 señales) y el
     ÚNICO resultado neto negativo (-$24.46, 20.8% win rate) de las 7
-    estrategias con datos suficientes -- arrastraba el win rate general del
-    sistema (25.1%) hacia abajo más que ninguna otra. La causa más
-    probable: el criterio original ("precio a menos de 0.15% de la EMA20")
-    es demasiado permisivo -- se cumple constantemente en mercados en
-    rango/choppy, sin exigir que haya existido un pullback real ni una
-    tendencia con fuerza mínima. Se agregan 3 filtros adicionales:
+    estrategias con datos suficientes. Se agregaron filtros de pullback
+    genuino, vela de confirmación y fuerza mínima de tendencia.
 
-    1. Pullback genuino: el precio debe haberse alejado de la EMA20 al
-       menos 0.35% en los últimos 10 velas antes de volver a acercarse
-       ahora -- sin esto, "estar cerca de la EMA" no distingue un
-       pullback real de simplemente estar pegado al promedio en un rango.
-    2. Vela de confirmación: la última vela debe cerrar en la dirección de
-       la tendencia (cuerpo alcista para BUY, bajista para SELL) -- filtra
-       entradas donde el precio toca la EMA pero sigue indeciso.
-    3. Fuerza mínima de tendencia: la separación entre EMA50 y EMA200 debe
-       ser de al menos 0.08% del precio -- filtra "tendencias" casi planas
-       donde el cruce EMA50/EMA200 es apenas perceptible.
-    4. Proximidad más estricta: de 0.15% a 0.10%.
-
-    Con esto se espera bajar la frecuencia de señales de esta estrategia
-    de forma notable a cambio de mayor calidad -- monitorear el nuevo win
-    rate real durante al menos una semana antes de ajustar de nuevo.
+    CAMBIO CRÍTICO (fix regresión, 2026-08-29): el ajuste del 19/08 fue
+    DEMASIADO estricto -- medido empíricamente (simulación Monte Carlo
+    sobre datos sintéticos representativos), esa versión disparaba en
+    apenas 0.134% de las velas, y en despliegue real generó CERO señales
+    en una semana completa (21-28/08) en los 7 activos asignados. Se
+    relajan los umbrales a un punto medio (calibrado para ~2.9% de las
+    velas en la misma simulación -- ni tan laxo como el original al 69%,
+    ni tan estricto como el 0.134% que efectivamente apagó la estrategia
+    por completo):
+    - Proximidad a EMA20: de 0.10% a 0.12%.
+    - Pullback mínimo previo: de 0.35% a 0.22%, y ventana de 10 a 7 velas.
+    - Fuerza de tendencia mínima: de 0.08% a 0.04%.
+    - Vela de confirmación: se acepta también vela neutra (doji), no solo
+      cuerpo direccional estricto -- exigir un cuerpo decisivo además de
+      todo lo demás resultó ser la gota que colmó el vaso.
     """
     if len(df) < 210:
         return None
@@ -397,22 +409,22 @@ def _strategy_5_ema_pullback(df: pd.DataFrame) -> Optional[Dict]:
     trend_down = ema50.iloc[-1] < ema200.iloc[-1]
 
     trend_strength = abs(ema50.iloc[-1] - ema200.iloc[-1]) / price
-    strong_trend = trend_strength >= 0.0008  # 0.08%
+    strong_trend = trend_strength >= 0.0004  # 0.04% (antes 0.08%)
 
-    near_ema = abs(price - ema20.iloc[-1]) / price < 0.0010  # antes 0.0015
+    near_ema = abs(price - ema20.iloc[-1]) / price < 0.0012  # antes 0.0010
 
-    # Pullback genuino: en las últimas 10 velas (sin contar la actual),
-    # el precio debe haber estado a >=0.35% de la EMA20 en algún momento.
-    recent_dist = (df["close"].iloc[-11:-1] - ema20.iloc[-11:-1]).abs() / df["close"].iloc[-11:-1]
-    had_real_pullback = bool((recent_dist >= 0.0035).any())
+    # Pullback genuino: en las últimas 7 velas (sin contar la actual), el
+    # precio debe haber estado a >=0.22% de la EMA20 en algún momento.
+    recent_dist = (df["close"].iloc[-8:-1] - ema20.iloc[-8:-1]).abs() / df["close"].iloc[-8:-1]
+    had_real_pullback = bool((recent_dist >= 0.0022).any())
 
-    confirm_bullish = last["close"] > last["open"]
-    confirm_bearish = last["close"] < last["open"]
+    confirm_bullish = last["close"] >= last["open"]
+    confirm_bearish = last["close"] <= last["open"]
 
     if trend_up and near_ema and strong_trend and had_real_pullback and confirm_bullish and price > ema200.iloc[-1]:
-        return {"direction": "BUY", "detail": "Pullback confirmado a EMA20 en tendencia alcista fuerte (EMA50>EMA200)"}
+        return {"direction": "BUY", "detail": "Pullback confirmado a EMA20 en tendencia alcista (EMA50>EMA200)"}
     if trend_down and near_ema and strong_trend and had_real_pullback and confirm_bearish and price < ema200.iloc[-1]:
-        return {"direction": "SELL", "detail": "Pullback confirmado a EMA20 en tendencia bajista fuerte (EMA50<EMA200)"}
+        return {"direction": "SELL", "detail": "Pullback confirmado a EMA20 en tendencia bajista (EMA50<EMA200)"}
     return None
 
 
@@ -635,22 +647,22 @@ def _strategy_18_dynamic_sr(df: pd.DataFrame) -> Optional[Dict]:
     """
     CAMBIO (fix win-rate, 2026-08-19 -- datos reales: peor win rate de
     las 7 estrategias con datos suficientes, 16.1% sobre 31 señales,
-    concentrado en EURJPY con 0% sobre 8 señales): el criterio original
-    solo exigía "precio cerca de la línea de tendencia + liquidez", sin
-    verificar que la pendiente fuera realmente significativa (una
-    regresión casi plana igual "califica" como línea de tendencia) ni que
-    hubiera una vela de rechazo real en el toque -- se agregan ambos
-    filtros:
+    concentrado en EURJPY con 0% sobre 8 señales): se agregaron pendiente
+    mínima significativa y vela de rechazo real en el toque.
 
-    1. Pendiente mínima significativa: la línea debe moverse al menos
-       0.05% del precio por vela en el rango de 40 velas -- filtra
-       "tendencias" casi horizontales que no representan una estructura
-       real.
-    2. Vela de rechazo en el toque: para el rebote alcista, la vela
-       actual debe tener mecha inferior >= a su cuerpo (rechazo real del
-       nivel); para el bajista, mecha superior >= cuerpo. Sin esto, se
-       podía disparar con una vela que simplemente "pasaba por ahí" sin
-       ninguna reacción visible en el nivel.
+    CAMBIO CRÍTICO (fix regresión, 2026-08-29): la calibración del 19/08
+    (pendiente mínima 0.05% del precio POR VELA, acumulado sobre 40 velas
+    -- un movimiento de ~2% en la ventana) resultó tan estricta que la
+    estrategia disparó CERO veces en una semana completa de prueba real
+    (21-28/08) en los 17 activos asignados (12 cruces + 5 índices).
+    Medido empíricamente (Monte Carlo), esa versión no disparaba NUNCA en
+    23,680 velas simuladas. Se recalibra a un punto medio (~3.2% de las
+    velas en la misma simulación):
+    - Pendiente mínima: de 0.05% a 0.02% del precio por vela.
+    - Proximidad a la línea: de 0.15% a 0.20%.
+    - Vela de rechazo: de "mecha >= cuerpo completo" a "mecha >= 75% del
+      cuerpo" -- rechazo real, pero no exclusivamente velas de rechazo
+      extremo.
     """
     if len(df) < 40:
         return None
@@ -665,7 +677,7 @@ def _strategy_18_dynamic_sr(df: pd.DataFrame) -> Optional[Dict]:
         return None
     price = float(df["close"].iloc[-1])
     last = df.iloc[-1]
-    body = abs(last["close"] - last["open"])
+    body = abs(last["close"] - last["open"]) + 1e-9
     upper_wick = last["high"] - max(last["close"], last["open"])
     lower_wick = min(last["close"], last["open"]) - last["low"]
 
@@ -673,15 +685,15 @@ def _strategy_18_dynamic_sr(df: pd.DataFrame) -> Optional[Dict]:
     trend_high_now = slope_high * (len(window) - 1) + intercept_high
     liquidity = indicator_service.detect_liquidity(df)
 
-    min_slope = 0.0005 * price  # 0.05% del precio por vela
+    min_slope = 0.0002 * price  # 0.02% del precio por vela (antes 0.05%)
 
-    rejection_bullish = lower_wick >= body
-    rejection_bearish = upper_wick >= body
+    rejection_bullish = (lower_wick / body) >= 0.75
+    rejection_bearish = (upper_wick / body) >= 0.75
 
-    if (slope_low > min_slope and abs(price - trend_low_now) / price < 0.0015
+    if (slope_low > min_slope and abs(price - trend_low_now) / price < 0.0020
             and liquidity["SSL"] and rejection_bullish):
         return {"direction": "BUY", "detail": "Rebote confirmado (rechazo) en línea de tendencia alcista significativa, con liquidez"}
-    if (slope_high < -min_slope and abs(price - trend_high_now) / price < 0.0015
+    if (slope_high < -min_slope and abs(price - trend_high_now) / price < 0.0020
             and liquidity["BSL"] and rejection_bearish):
         return {"direction": "SELL", "detail": "Rebote confirmado (rechazo) en línea de tendencia bajista significativa, con liquidez"}
     return None
