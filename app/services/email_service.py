@@ -1,5 +1,6 @@
 """Email service using Gmail API with OAuth2."""
 import os
+import asyncio
 import base64
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -9,6 +10,36 @@ from datetime import datetime
 from typing import Optional
 from loguru import logger
 from app.core.config import settings
+
+# CAMBIO CRÍTICO (fix, 2026-09-04 -- "el sistema se detiene por el correo
+# electrónico"): confirmado con logs reales de 2 días distintos
+# (2026-09-02 y 2026-09-03): ambos logs terminan EXACTAMENTE en la línea
+# "Starting Gmail OAuth flow..." -- el programa completo se queda
+# congelado ahí, sin ningún error posterior, hasta que alguien lo
+# reinicia manualmente.
+#
+# Causa: `flow.run_local_server(port=0)` es una llamada SÍNCRONA y
+# BLOQUEANTE que levanta un servidor HTTP local y espera indefinidamente
+# a que una persona complete el login de Google en un navegador. Se
+# llamaba directamente dentro de un método `async def`, sin ningún
+# timeout y sin correrla en un hilo aparte -- eso bloquea TODO el event
+# loop de asyncio (el proceso completo, incluyendo el motor de señales,
+# el monitor de posiciones, MT5, todo) mientras espera un login
+# interactivo que nunca va a llegar en un servidor sin navegador.
+#
+# Esto se dispara cada vez que el refresh token de Gmail expira o se
+# revoca (visto en los logs: "invalid_grant: Token has been expired or
+# revoked") -- en ese caso el código intentaba relanzar el flujo
+# interactivo completo, congelando el sistema el resto del día (y del
+# siguiente, y del que sigue...).
+#
+# Corrección: TODA llamada de red/interactiva de este archivo ahora corre
+# en un hilo aparte (`asyncio.to_thread`) envuelta en
+# `asyncio.wait_for(..., timeout=EMAIL_TIMEOUT_SECONDS)` (60s por
+# defecto, configurable). Si no responde a tiempo, se cancela, se
+# registra un WARNING claro, y el programa SIGUE corriendo con el correo
+# deshabilitado para ese intento -- exactamente como se pidió.
+EMAIL_TIMEOUT_SECONDS = getattr(settings, "EMAIL_TIMEOUT_SECONDS", 60)
 
 
 class EmailService:
@@ -22,7 +53,16 @@ class EmailService:
         self._initialized = False
 
     async def initialize(self):
-        """Initialize Gmail service with OAuth2 credentials."""
+        """
+        Initialize Gmail service with OAuth2 credentials.
+
+        CAMBIO CRÍTICO (fix, 2026-09-04): tanto el refresco del token
+        como el flujo interactivo de login ahora corren con un timeout de
+        `EMAIL_TIMEOUT_SECONDS` (60s por defecto) -- si no responden a
+        tiempo, se continúa sin correo en vez de congelar el sistema. Ver
+        el comentario al inicio del archivo para el detalle completo del
+        bug encontrado.
+        """
         try:
             from google.oauth2.credentials import Credentials
             from google_auth_oauthlib.flow import InstalledAppFlow
@@ -38,10 +78,24 @@ class EmailService:
             # Use credentials if valid, or try to refresh them
             if self.credentials and self.credentials.expired and self.credentials.refresh_token:
                 try:
-                    self.credentials.refresh(Request())
+                    # CAMBIO: el refresco de token es una llamada de red
+                    # síncrona (bloqueante) -- se corre en un hilo aparte
+                    # con timeout, igual que el flujo interactivo de abajo,
+                    # para que un hipo de red no congele el proceso.
+                    await asyncio.wait_for(
+                        asyncio.to_thread(self.credentials.refresh, Request()),
+                        timeout=EMAIL_TIMEOUT_SECONDS,
+                    )
                     with open(token_path, "w") as token:
                         token.write(self.credentials.to_json())
                     logger.info("Gmail token refreshed successfully")
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        f"Gmail: el refresco del token no respondió en {EMAIL_TIMEOUT_SECONDS}s -- "
+                        f"se continúa SIN correo por ahora. El sistema sigue funcionando con "
+                        f"normalidad (esto no bloquea señales, MT5 ni el resto del proceso)."
+                    )
+                    self.credentials = None
                 except Exception as e:
                     logger.error(f"Failed to refresh Gmail token: {e}")
                     self.credentials = None
@@ -49,15 +103,37 @@ class EmailService:
             # Only run local server if no valid credentials exist
             if not self.credentials or not self.credentials.valid:
                 if os.path.exists(client_secret_path):
-                    logger.info("Starting Gmail OAuth flow...")
+                    logger.info(f"Starting Gmail OAuth flow (timeout {EMAIL_TIMEOUT_SECONDS}s)...")
                     flow = InstalledAppFlow.from_client_secrets_file(
                         client_secret_path, self.SCOPES
                     )
-                    self.credentials = flow.run_local_server(port=0)
-                    # Save token
-                    if self.credentials:
-                        with open(token_path, "w") as token:
-                            token.write(self.credentials.to_json())
+                    try:
+                        # CAMBIO CRÍTICO: antes esta línea bloqueaba TODO el
+                        # proceso indefinidamente esperando un login manual
+                        # en un navegador -- que nunca llega en un servidor
+                        # headless. Ahora corre en un hilo aparte con
+                        # timeout: si nadie completa el login en
+                        # `EMAIL_TIMEOUT_SECONDS`, se cancela y el programa
+                        # sigue funcionando sin correo.
+                        self.credentials = await asyncio.wait_for(
+                            asyncio.to_thread(flow.run_local_server, port=0),
+                            timeout=EMAIL_TIMEOUT_SECONDS,
+                        )
+                        # Save token
+                        if self.credentials:
+                            with open(token_path, "w") as token:
+                                token.write(self.credentials.to_json())
+                    except asyncio.TimeoutError:
+                        logger.warning(
+                            f"Gmail: nadie completó el login interactivo en "
+                            f"{EMAIL_TIMEOUT_SECONDS}s -- se continúa SIN correo. El resto "
+                            f"del sistema (señales, MT5, monitoreo) sigue funcionando con "
+                            f"normalidad. Para reactivar el correo, el login de Gmail debe "
+                            f"completarse manualmente (esto requiere un navegador -- no es "
+                            f"viable en un servidor sin interfaz gráfica; ver "
+                            f"docs/DIAGNOSTICO_EMAIL.md)."
+                        )
+                        self.credentials = None
                 else:
                     logger.warning("client_secret.json not found. Gmail authentication skipped.")
 
@@ -65,6 +141,8 @@ class EmailService:
                 self.service = build("gmail", "v1", credentials=self.credentials)
                 self._initialized = True
                 logger.info("Gmail service initialized successfully")
+            else:
+                self._initialized = False
 
         except Exception as e:
             logger.error(f"Error initializing Gmail service: {e}")
@@ -108,9 +186,25 @@ class EmailService:
 
             # Send
             raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
-            self.service.users().messages().send(
-                userId="me", body={"raw": raw}
-            ).execute()
+            # CAMBIO (fix, 2026-09-04): el envío real también es una
+            # llamada de red bloqueante -- mismo timeout que el resto del
+            # archivo, por consistencia y para no reabrir el mismo tipo de
+            # bloqueo en otro punto.
+            try:
+                await asyncio.wait_for(
+                    asyncio.to_thread(
+                        lambda: self.service.users().messages().send(
+                            userId="me", body={"raw": raw}
+                        ).execute()
+                    ),
+                    timeout=EMAIL_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    f"Gmail: el envío del correo no respondió en {EMAIL_TIMEOUT_SECONDS}s -- "
+                    f"se omite este reporte por correo, el sistema continúa con normalidad."
+                )
+                return False
 
             logger.info(f"Backtest email sent to {settings.EMAIL_RECIPIENT}")
             return True

@@ -293,42 +293,74 @@ class MT5ExecutorService:
         mismo volumen implicaría arriesgar MÁS dinero del calculado, no
         menos -- por eso el volumen se ajusta hacia abajo, nunca al revés).
         Este ajuste es SOLO para la orden real enviada al bróker; el
-        `stop_loss` guardado en la señal (Excel, backtesting) no cambia.
+        `stop_loss`/`take_profit_3` guardados en la señal (Excel,
+        backtesting) no cambian.
 
-        Retorna (sl_ajustado, volumen_ajustado).
+        CAMBIO CRÍTICO (fix, 2026-09-05): el fix anterior SOLO validaba el
+        SL -- nunca el TP. Con logs reales de la semana del 2-5/09 se
+        siguieron viendo 28 rechazos "Invalid stops" en 6 activos
+        distintos (NZDUSD, USDJPY, GBPUSD, USDCHF, EURUSD, AUDUSD) --
+        varios de ellos con SL de sobra, así que el TP (take_profit_3,
+        el nivel que se manda al bróker) era el que realmente violaba el
+        mínimo. Ahora se valida y ajusta también el TP -- alejarlo NO
+        requiere tocar el volumen (agrandar la ganancia potencial no
+        aumenta el riesgo). También se agrega un pequeño margen de
+        seguridad extra (2 puntos en vez de 1) para absorber el
+        deslizamiento natural entre el precio que consultamos y el precio
+        real de ejecución un instante después.
+
+        Retorna (sl_ajustado, tp_ajustado, volumen_ajustado).
         """
         info = mt5.symbol_info(symbol)
         if info is None:
-            return sl, volume
+            return sl, tp, volume
 
         min_distance = info.trade_stops_level * info.point
         if min_distance <= 0:
-            return sl, volume
+            return sl, tp, volume
 
+        safety_margin = 2 * info.point  # antes 1 punto, ahora 2 por deslizamiento
+        adjusted_sl, adjusted_volume = sl, volume
+        adjusted_tp = tp
+
+        # --- Validar/ajustar SL ---
         current_sl_distance = abs(price - sl)
-        if current_sl_distance >= min_distance:
-            return sl, volume
+        if current_sl_distance < min_distance:
+            adjusted_sl_distance = min_distance + safety_margin
+            if direction == "BUY":
+                adjusted_sl = round(price - adjusted_sl_distance, info.digits)
+            else:
+                adjusted_sl = round(price + adjusted_sl_distance, info.digits)
 
-        # Se necesita alejar el SL al mínimo permitido (+1 punto de margen).
-        adjusted_distance = min_distance + info.point
-        if direction == "BUY":
-            adjusted_sl = round(price - adjusted_distance, info.digits)
-        else:
-            adjusted_sl = round(price + adjusted_distance, info.digits)
+            # Reduce el volumen proporcionalmente para mantener el mismo
+            # riesgo en dinero ($ = pips_riesgo * pip_value * volumen).
+            volume_step = info.volume_step or 0.01
+            adjusted_volume = volume * (current_sl_distance / adjusted_sl_distance)
+            adjusted_volume = max(info.volume_min, round(adjusted_volume / volume_step) * volume_step)
 
-        # Reduce el volumen proporcionalmente para mantener el mismo
-        # riesgo en dinero ($ = pips_riesgo * pip_value * volumen).
-        volume_step = info.volume_step or 0.01
-        adjusted_volume = volume * (current_sl_distance / adjusted_distance)
-        adjusted_volume = max(info.volume_min, round(adjusted_volume / volume_step) * volume_step)
+            logger.warning(
+                f"MT5: SL de {symbol} estaba a {current_sl_distance:.5f} del precio, por debajo "
+                f"del mínimo del bróker ({min_distance:.5f}). Se alejó a {adjusted_sl_distance:.5f} "
+                f"y se redujo el volumen de {volume} a {adjusted_volume} para mantener el mismo "
+                f"riesgo en dinero calculado originalmente."
+            )
 
-        logger.warning(
-            f"MT5: SL de {symbol} estaba a {current_sl_distance:.5f} del precio, por debajo "
-            f"del mínimo del bróker ({min_distance:.5f}). Se alejó a {adjusted_distance:.5f} "
-            f"y se redujo el volumen de {volume} a {adjusted_volume} para mantener el mismo "
-            f"riesgo en dinero calculado originalmente."
-        )
-        return adjusted_sl, adjusted_volume
+        # --- Validar/ajustar TP (CAMBIO CRÍTICO, 2026-09-05) ---
+        current_tp_distance = abs(price - tp)
+        if current_tp_distance < min_distance:
+            adjusted_tp_distance = min_distance + safety_margin
+            if direction == "BUY":
+                adjusted_tp = round(price + adjusted_tp_distance, info.digits)
+            else:
+                adjusted_tp = round(price - adjusted_tp_distance, info.digits)
+
+            logger.warning(
+                f"MT5: TP de {symbol} estaba a {current_tp_distance:.5f} del precio, por debajo "
+                f"del mínimo del bróker ({min_distance:.5f}). Se alejó a {adjusted_tp_distance:.5f} "
+                f"(alejar el TP no cambia el riesgo, no hace falta ajustar el volumen)."
+            )
+
+        return adjusted_sl, adjusted_tp, adjusted_volume
 
     # ------------------------------------------------------------------
     # Apertura de posición
@@ -423,10 +455,16 @@ class MT5ExecutorService:
             return None
         price = tick.ask if signal.direction == SignalDirection.BUY else tick.bid
 
-        # CAMBIO (fix, 2026-08-19): valida y ajusta el SL/volumen si hace
-        # falta ANTES de armar la orden (ver `_validate_and_adjust_stops`
-        # -- causa del 18% de rechazos "Invalid stops" en logs reales).
-        adjusted_sl, adjusted_volume = self._validate_and_adjust_stops(
+        # CAMBIO (fix, 2026-08-19, ampliado 2026-09-05): valida y ajusta
+        # SL, TP y volumen si hace falta ANTES de armar la orden (ver
+        # `_validate_and_adjust_stops` -- causa de los rechazos "Invalid
+        # stops" en logs reales). CAMBIO CRÍTICO: antes solo se ajustaba
+        # el SL pero se seguía mandando `signal.take_profit_3` SIN ajustar
+        # en el campo "tp" de la orden -- si el TP era el que violaba la
+        # distancia mínima (visto en 28 rechazos reales de la semana del
+        # 2-5/09 en 6 activos distintos), el ajuste del SL no servía de
+        # nada porque la orden se rechazaba igual por el TP.
+        adjusted_sl, adjusted_tp, adjusted_volume = self._validate_and_adjust_stops(
             symbol, signal.direction.value, price, signal.stop_loss, signal.take_profit_3, signal.lot_size
         )
 
@@ -437,7 +475,7 @@ class MT5ExecutorService:
             "type": order_type,
             "price": price,
             "sl": adjusted_sl,
-            "tp": signal.take_profit_3,
+            "tp": adjusted_tp,
             "deviation": settings.MT5_DEVIATION_POINTS,
             "magic": self._magic,
             "comment": f"TSPro-{signal.id}"[:31],  # MT5 limita el comentario a 31 caracteres

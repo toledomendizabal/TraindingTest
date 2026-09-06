@@ -21,6 +21,17 @@ class Settings(BaseSettings):
     # Email
     EMAIL_RECIPIENT: str = "toledomendizabal.invertision@gmail.com"
     EMAIL_SENDER: str = "toledomendizabal@gmail.com"
+    # CAMBIO (a pedido del usuario, 2026-09-04 -- "el sistema se detiene
+    # por el correo electrónico"): timeout máximo para cualquier operación
+    # de Gmail (refresco de token, login OAuth interactivo, envío del
+    # correo). Antes no existía ningún límite -- el login interactivo en
+    # particular podía bloquear el proceso COMPLETO indefinidamente en un
+    # servidor sin navegador (confirmado con logs reales: el sistema se
+    # quedó congelado 2 días distintos justo en "Starting Gmail OAuth
+    # flow..."). Con este timeout, si el correo no responde a tiempo, se
+    # continúa la ejecución normal del programa sin correo -- ver
+    # app/services/email_service.py.
+    EMAIL_TIMEOUT_SECONDS: int = int(os.getenv("EMAIL_TIMEOUT_SECONDS", "60"))
 
     # Server
     API_HOST: str = "0.0.0.0"
