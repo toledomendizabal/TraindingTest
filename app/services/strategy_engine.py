@@ -60,6 +60,7 @@ from typing import Dict, List, Optional, Tuple
 from loguru import logger
 
 from app.services.indicators import indicator_service
+from app.core.config import settings
 
 
 # ======================================================================
@@ -140,8 +141,10 @@ def get_strategies_for_asset(asset: str) -> List[int]:
         # Activo no mapeado explícitamente: usa un set neutro razonable
         # (reversión + breakout) en lugar de bloquear el análisis.
         logger.warning(f"[strategy_engine] Activo '{asset}' sin grupo asignado en ASSET_GROUPS; usando estrategias por defecto [1, 4].")
-        return [1, 4]
-    return ASSET_GROUPS[group]["strategies"]
+        ids = [1, 4]
+    else:
+        ids = ASSET_GROUPS[group]["strategies"]
+    return [sid for sid in ids if sid not in settings.DISABLED_STRATEGY_IDS]
 
 
 def get_complementary_assets(asset: str) -> List[str]:

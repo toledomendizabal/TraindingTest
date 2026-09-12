@@ -84,6 +84,35 @@ def main():
         else:
             print(f"    {symbol}: encontrado (visible={info.visible}, spread={info.spread})")
 
+    # NUEVO (fix, 2026-09-12): 'US500Cash' (y otros índices/materias
+    # primas con nombre no estandarizado entre brokers) aparecían en los
+    # logs reales como "no se encontró ningún símbolo que coincida" --
+    # esto busca en TODO el símbolo del bróker por palabras clave, para
+    # encontrar el nombre exacto que hay que poner en
+    # settings.MT_SYMBOL_ALIASES (.env: MT_SYMBOL_ALIASES={"US500Cash": "..."})
+    # y en el input `SymbolsToExport` de PriceExporter.mq5.
+    check_step("5b. Búsqueda de símbolos difíciles (índices/materias primas)")
+    all_symbols = mt5.symbols_get() or []
+    keyword_groups = {
+        "US500Cash (S&P500)": ["500", "SPX", "SP500"],
+        "US30Cash (Dow Jones)": ["US30", "DOW", "DJI", "DJ30"],
+        "US100Cash (Nasdaq)": ["US100", "NAS", "NDX", "NQ"],
+        "GER40Cash (DAX)": ["GER40", "DAX", "DE40"],
+        "STOXX50Cash": ["STOXX", "ESTX"],
+        "WTI": ["WTI", "USOIL", "OILUSD"],
+        "BRENT": ["BRENT", "UKOIL"],
+        "COPPER": ["COPPER", "XCU"],
+    }
+    for label, keywords in keyword_groups.items():
+        matches = [
+            s.name for s in all_symbols
+            if any(k in s.name.upper() for k in keywords)
+        ]
+        if matches:
+            print(f"    {label}: posibles coincidencias -> {matches}")
+        else:
+            print(f"    {label}: NINGUNA coincidencia en este bróker (puede que no lo ofrezca).")
+
     check_step("6. Prueba de envío de orden (MODO SOLO LECTURA -- no se envía nada real)")
     print("    Este script NO envía órdenes reales a propósito.")
     print("    Si los pasos 1-5 salieron OK, el problema NO es de conectividad:")

@@ -173,6 +173,13 @@ class MT5ExecutorService:
         señal necesite abrir una operación para descubrir que la conexión
         se había caído. Si `MT5_LIVE_TRADING_ENABLED` es False, no hace
         nada (comportamiento normal en modo "solo señales").
+
+        NOTA: esto SOLO verifica/repara la conexión IPC con la terminal
+        (`terminal_info().connected`). NO detecta si el botón "Algo
+        Trading" está apagado -- ver `get_health_status()` /
+        `check_autotrading_enabled()` para eso, porque son cosas
+        distintas y requieren manejo distinto (AutoTrading no se puede
+        reactivar por API, solo detectar y avisar).
         """
         if not settings.MT5_LIVE_TRADING_ENABLED or not MT5_AVAILABLE:
             return False
@@ -180,6 +187,90 @@ class MT5ExecutorService:
             return True
         logger.warning("MT5: chequeo de salud detectó conexión caída -- reconectando...")
         return self.connect()
+
+    def check_autotrading_enabled(self) -> Optional[bool]:
+        """
+        CAMBIO (fix, 2026-09-12 -- diagnóstico de errores.log reales
+        06-11/09: decenas de "retcode=10027 AutoTrading disabled by
+        client" repitiéndose cada ~24h sin que nada lo detectara ni
+        avisara, porque `health_check()` solo mira si la terminal sigue
+        CONECTADA, no si el botón "Algo Trading" está encendido -- son dos
+        estados independientes. Reconectar la sesión (`mt5.initialize()` /
+        `mt5.login()`) NO reactiva ese botón: es un control de la interfaz
+        de la terminal, no de la cuenta ni de la sesión IPC, así que
+        seguía apagado indefinidamente hasta que alguien lo notara
+        manualmente revisando logs.
+
+        Revisa DOS fuentes -- `terminal_info().trade_allowed` (el botón
+        "Algo Trading" de la terminal) Y `account_info().trade_allowed`
+        (permiso de trading a nivel de cuenta/servidor, puede apagarse el
+        bróker por su cuenta, ej. por protección de riesgo o noticias) --
+        cualquiera de las dos en False bloquea el envío real de órdenes.
+
+        Retorna True si ambas están habilitadas, False si alguna está
+        deshabilitada, o None si no se pudo determinar (sin conexión).
+        """
+        if not MT5_AVAILABLE or not self.is_connected_live():
+            return None
+        try:
+            terminal = mt5.terminal_info()
+            account = mt5.account_info()
+            terminal_ok = bool(getattr(terminal, "trade_allowed", False)) if terminal else False
+            account_ok = bool(getattr(account, "trade_allowed", False)) if account else False
+            return terminal_ok and account_ok
+        except Exception as e:
+            logger.warning(f"MT5: error verificando estado de AutoTrading: {e}")
+            return None
+
+    def get_health_status(self) -> dict:
+        """
+        Estado consolidado para el watchdog periódico del scheduler:
+        conexión, AutoTrading (terminal) y trading permitido (cuenta),
+        con un mensaje ya redactado listo para loguear o mandar por
+        Telegram. Ver `scheduler._mt5_health_check`.
+        """
+        status = {
+            "connected": False,
+            "autotrading_terminal": None,
+            "trade_allowed_account": None,
+            "ok": False,
+            "message": "",
+        }
+        if not settings.MT5_LIVE_TRADING_ENABLED or not MT5_AVAILABLE:
+            status["message"] = "MT5 live trading deshabilitado, no aplica."
+            return status
+
+        status["connected"] = self.is_connected_live()
+        if not status["connected"]:
+            status["message"] = "Sin conexión con la terminal MT5."
+            return status
+
+        try:
+            terminal = mt5.terminal_info()
+            account = mt5.account_info()
+            status["autotrading_terminal"] = bool(getattr(terminal, "trade_allowed", False)) if terminal else None
+            status["trade_allowed_account"] = bool(getattr(account, "trade_allowed", False)) if account else None
+        except Exception as e:
+            status["message"] = f"Error consultando estado: {e}"
+            return status
+
+        if status["autotrading_terminal"] is False:
+            status["message"] = (
+                "AutoTrading (botón 'Algo Trading') está DESACTIVADO en la terminal. "
+                "Ninguna orden real se está enviando (retcode 10027). Requiere "
+                "reactivarlo manualmente en la terminal -- no se puede por API."
+            )
+        elif status["trade_allowed_account"] is False:
+            status["message"] = (
+                "La cuenta reporta trading NO permitido a nivel de servidor/bróker "
+                "(account_info().trade_allowed=False). Puede ser una restricción "
+                "temporal del bróker (noticias, mantenimiento, protección de riesgo)."
+            )
+        else:
+            status["ok"] = True
+            status["message"] = "Conexión y AutoTrading OK."
+
+        return status
 
     # ------------------------------------------------------------------
     # Resolución de símbolo

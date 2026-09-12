@@ -16,6 +16,7 @@ class SchedulerService:
     def __init__(self):
         self.scheduler = AsyncIOScheduler()
         self._is_running = False
+        self._last_autotrading_alert = 0  # epoch seconds, ver _alert_autotrading_issue
 
     def start(self):
         """Start the scheduler with all configured jobs."""
@@ -254,14 +255,56 @@ class SchedulerService:
         CAMBIO (a pedido del usuario, 2026-08-12): verifica que la conexión
         con MT5 siga viva y reconecta si hace falta. No hace nada si
         MT5_LIVE_TRADING_ENABLED está en False (modo "solo señales").
+
+        CAMBIO (fix, 2026-09-12): además de la conexión, ahora también
+        verifica el estado de AutoTrading/trade_allowed
+        (`mt5_executor.get_health_status()`) y manda una alerta por
+        Telegram cuando está apagado -- antes esto solo quedaba en el
+        log de errores y nadie se enteraba hasta revisar `errors_*.log`
+        varios días después, mientras las órdenes reales se seguían
+        rechazando en silencio (retcode 10027) durante todo ese tiempo.
+        Usa un cooldown (`_last_autotrading_alert`) para no mandar el
+        mismo aviso en cada ciclo de 5 minutos mientras el problema siga
+        sin resolverse manualmente.
         """
         try:
             from app.services.mt5_executor import mt5_executor
             ok = mt5_executor.health_check()
             if settings.MT5_LIVE_TRADING_ENABLED:
                 logger.debug(f"[MT5_HEALTH] Conexión {'OK' if ok else 'NO disponible'}.")
+
+                status = mt5_executor.get_health_status()
+                if status["connected"] and not status["ok"]:
+                    logger.error(f"[MT5_HEALTH] {status['message']}")
+                    await self._alert_autotrading_issue(status["message"])
+
+            # CAMBIO (fix, 2026-09-12): chequeo independiente vía el
+            # heartbeat de PriceExporter.mq5 -- cubre el caso en que el
+            # backend corre en una máquina donde `mt5_executor` (paquete
+            # Python MetaTrader5) no tiene sesión propia con la terminal
+            # (ej. backend en Linux, terminal en una VM/PC Windows aparte
+            # compartiendo solo la carpeta Files).
+            from app.services.market_data import market_data_service
+            hb = market_data_service.check_price_exporter_heartbeat()
+            if not hb["alive"] or hb["autotrading_terminal"] is False:
+                logger.warning(f"[PRICEEXPORTER_HEALTH] {hb['message']}")
+                await self._alert_autotrading_issue(f"(PriceExporter.mq5) {hb['message']}")
         except Exception as e:
             logger.error(f"Error en chequeo de salud de MT5: {e}")
+
+    async def _alert_autotrading_issue(self, message: str):
+        """Envía la alerta de AutoTrading/trade_allowed por Telegram, con cooldown."""
+        import time
+        now = time.time()
+        cooldown = getattr(settings, "MT5_AUTOTRADING_ALERT_COOLDOWN_MINUTES", 30) * 60
+        if now - self._last_autotrading_alert < cooldown:
+            return
+        self._last_autotrading_alert = now
+        try:
+            from app.services.telegram_service import telegram_service
+            await telegram_service.send_message(f"⚠️ <b>MT5 - Trading real bloqueado</b>\n{message}")
+        except Exception as e:
+            logger.error(f"No se pudo enviar alerta de AutoTrading por Telegram: {e}")
 
     async def _verify_persistence(self):
         """

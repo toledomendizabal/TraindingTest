@@ -282,6 +282,28 @@ class Settings(BaseSettings):
 
     # Chequeo de salud de la conexión MT5 (reconecta si se cayó), en minutos.
     MT5_HEALTH_CHECK_INTERVAL_MINUTES: int = int(os.getenv("MT5_HEALTH_CHECK_INTERVAL_MINUTES", "5"))
+    # CAMBIO (fix, 2026-09-12): minutos entre alertas repetidas de Telegram
+    # cuando AutoTrading/trade_allowed sigue apagado -- evita spam mientras
+    # el problema no se resuelva manualmente. Ver scheduler._alert_autotrading_issue.
+    MT5_AUTOTRADING_ALERT_COOLDOWN_MINUTES: int = int(os.getenv("MT5_AUTOTRADING_ALERT_COOLDOWN_MINUTES", "30"))
+
+    # CAMBIO (fix, 2026-09-12 -- evidencia real de DOS periodos
+    # independientes): la Estrategia 6 "Cruce de EMAs (Crossover de
+    # Momento)" tuvo win rate 22.2% (02-sep, n=~18) y 27.3% (07-11 sep,
+    # n=~77) -- consistentemente la peor de las 4 estrategias con datos en
+    # ambos periodos, incluso DESPUÉS del filtro de tendencia EMA100 que
+    # ya se le agregó el 2026-08-19. No es un problema de ejecución (a
+    # diferencia de la caída de Breakout/Silver Bullet, que sí coincide en
+    # fecha con las fallas técnicas de MT5/Twelve Data): esta estrategia
+    # rinde mal de forma estructural. Se desactiva por defecto aquí en
+    # vez de borrar el código, para poder reactivarla fácil (quitándola
+    # de esta lista, o vía variable de entorno) si se re-optimiza y se
+    # quiere volver a probar. NO es una garantía de que las estrategias
+    # restantes vayan a tener buen desempeño -- solo se retira la que ya
+    # demostró ser la más débil con datos reales suficientes.
+    DISABLED_STRATEGY_IDS: List[int] = [
+        int(x) for x in os.getenv("DISABLED_STRATEGY_IDS", "6").split(",") if x.strip()
+    ]
 
     # Verificación de persistencia (señales activas en memoria vs Excel), en minutos.
     PERSISTENCE_CHECK_INTERVAL_MINUTES: int = int(os.getenv("PERSISTENCE_CHECK_INTERVAL_MINUTES", "30"))

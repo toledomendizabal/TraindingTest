@@ -187,6 +187,80 @@ class MarketDataService:
             logger.debug(f"MT4 price read failed for {asset}: {e}")
         return None
 
+    def check_price_exporter_heartbeat(self, max_age_seconds: int = 120) -> Dict:
+        """
+        NUEVO (fix, 2026-09-12): lee `ea_heartbeat.csv`, que
+        `PriceExporter.mq5` (v2.1+) escribe en cada ciclo con el
+        timestamp UTC y el estado de AutoTrading/trading de cuenta,
+        directamente desde la terminal MT5 -- sin pasar por la librería
+        Python `MetaTrader5`.
+
+        Esto es necesario porque en instalaciones donde el backend corre
+        en Linux/Mac (ver advertencia en mt5_executor.py: el paquete
+        `MetaTrader5` de Python NO funciona nativo ahí), la única forma
+        de saber si la terminal Windows remota sigue viva y con
+        AutoTrading activo es este archivo compartido -- `mt5_executor`
+        simplemente no puede conectarse para preguntarlo directamente.
+
+        Retorna un dict con:
+          - alive: True si el heartbeat se actualizó hace menos de
+            `max_age_seconds` (por defecto 120s = 2x el intervalo de
+            precio en tiempo real).
+          - autotrading_terminal / trade_allowed_account / connected:
+            los flags reportados por la terminal (o None si no se pudo leer).
+          - message: texto listo para loguear/alertar.
+        """
+        result = {
+            "alive": False,
+            "autotrading_terminal": None,
+            "trade_allowed_account": None,
+            "connected": None,
+            "message": "",
+        }
+        if not settings.MT4_FILES_PATH:
+            result["message"] = "MT4_FILES_PATH no configurado, no se puede leer el heartbeat."
+            return result
+
+        heartbeat_file = os.path.join(settings.MT4_FILES_PATH, "ea_heartbeat.csv")
+        if not os.path.exists(heartbeat_file):
+            result["message"] = (
+                "No existe ea_heartbeat.csv todavía -- o PriceExporter.mq5 sigue en la "
+                "versión anterior (sin heartbeat) o el EA no está corriendo en la terminal."
+            )
+            return result
+
+        try:
+            with open(heartbeat_file, mode="r", encoding="utf-8", errors="ignore") as f:
+                reader = csv.DictReader(f)
+                row = next(reader, None)
+            if not row:
+                result["message"] = "ea_heartbeat.csv está vacío (posible reescritura a mitad de lectura, reintentar)."
+                return result
+
+            ts = datetime.strptime(row["timestamp_utc"], "%Y.%m.%d %H:%M:%S")
+            age = (datetime.utcnow() - ts).total_seconds()
+            result["autotrading_terminal"] = row.get("autotrading_terminal") == "1"
+            result["trade_allowed_account"] = row.get("trade_allowed_account") == "1"
+            result["connected"] = row.get("connected") == "1"
+            result["alive"] = age < max_age_seconds
+
+            if not result["alive"]:
+                result["message"] = (
+                    f"PriceExporter.mq5 no actualiza su heartbeat hace {int(age)}s "
+                    f"(límite {max_age_seconds}s) -- el EA pudo detenerse, la terminal "
+                    f"pudo cerrarse, o AutoTrading para EAs está desactivado a nivel terminal."
+                )
+            elif not result["autotrading_terminal"]:
+                result["message"] = "Heartbeat vivo, pero AutoTrading está DESACTIVADO en la terminal."
+            elif not result["trade_allowed_account"]:
+                result["message"] = "Heartbeat vivo, pero la cuenta reporta trading NO permitido."
+            else:
+                result["message"] = "PriceExporter.mq5 activo y AutoTrading OK."
+        except Exception as e:
+            result["message"] = f"Error leyendo ea_heartbeat.csv: {e}"
+
+        return result
+
     async def get_price(self, asset: str) -> Optional[Dict]:
         """
         Get current price prioritizing MT4 then API.
