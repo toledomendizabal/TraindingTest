@@ -80,7 +80,25 @@ ASSET_GROUPS: Dict[str, Dict] = {
     },
     "FOREX_YEN_COMMODITY": {
         "assets": ["USDJPY", "AUDUSD", "USDCAD"],
-        "strategies": [5, 6],  # Pullback EMA en tendencia / Cruce de EMAs (carry, news-based)
+        # CAMBIO (2026-09-13 -- consulta a IA Mentor Core sobre
+        # alternativas de mejora, ver
+        # "Análisis de estrategias actuales y alternativas de mejora.md"):
+        # el motor corre en modo "estrategias independientes" (cada una
+        # dispara su propia señal, no se exige que coincidan), así que se
+        # puede correr un experimento de 4 brazos en paralelo sin romper
+        # nada, en vez de decidir a ciegas qué reemplaza a qué:
+        #   5 -> Pullback EMA: candidata principal, se mantiene.
+        #   6 -> EMA Cross V3 (ver _strategy_6_ema_crossover): ÚLTIMA
+        #        prueba controlada antes de eliminarla definitivamente.
+        #   2 -> Mitigación de Order Block: 1ra candidata a reemplazo.
+        #   9 -> Reacción a VWAP (+contexto EMA50): 2da candidata.
+        # Cada una queda registrada con su propio `strategy_name` en
+        # signals_tracking.xlsx, así que después de acumular muestra
+        # (ver AJUSTES_RECOMENDADOS/ADENDA: mínimo ~100 señales por
+        # estrategia, distribuidas en distintas condiciones de mercado)
+        # se puede comparar expectancy real y quedarse solo con las que
+        # tengan mejor desempeño, quitando las demás de esta lista.
+        "strategies": [5, 6, 2, 9],
         "complementary": ["JP225", "WTI", "BRENT"],
     },
     "FOREX_CROSSES": {
@@ -110,10 +128,10 @@ STRATEGY_NAMES = {
     3: "Trampa del Rango Asiático (Modelo AMD)",
     4: "Ruptura de Rango (Breakout Institucional)",
     5: "Retroceso a EMA (Pullback en Tendencia)",
-    6: "Cruce de EMAs (Crossover de Momento)",
+    6: "Cruce de EMAs V3 (Momento + Separación ATR + Pendiente EMA100)",
     7: "Estocástico en Extremos",
     8: "Bandas de Bollinger (Rebote / Squeeze)",
-    9: "Reacción al VWAP",
+    9: "Reacción al VWAP (+ contexto tendencia EMA50)",
     10: "Pin Bar en Soporte/Resistencia",
     11: "Vela Envolvente (Engulfing)",
     12: "Divergencia de RSI",
@@ -144,7 +162,7 @@ def get_strategies_for_asset(asset: str) -> List[int]:
         ids = [1, 4]
     else:
         ids = ASSET_GROUPS[group]["strategies"]
-    return [sid for sid in ids if sid not in settings.DISABLED_STRATEGY_IDS]
+    return [sid for sid in ids if sid not in settings.disabled_strategy_ids]
 
 
 def get_complementary_assets(asset: str) -> List[str]:
@@ -159,6 +177,25 @@ def get_complementary_assets(asset: str) -> List[str]:
 # ======================================================================
 def _ema(series: pd.Series, span: int) -> pd.Series:
     return series.ewm(span=span, adjust=False).mean()
+
+
+def _atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
+    """
+    NUEVO (2026-09-13, para EMA Cross V3 -- ver _strategy_6_ema_crossover):
+    Average True Range clásico (Wilder), usado para normalizar la
+    separación entre EMAs y para detectar expansión/compresión de
+    volatilidad. No existía en este archivo; sí se usa en otros lados del
+    proyecto (indicators.py) pero se define aquí también para no acoplar
+    strategy_engine a ese módulo por un solo cálculo.
+    """
+    high, low, close = df["high"], df["low"], df["close"]
+    prev_close = close.shift(1)
+    tr = pd.concat([
+        (high - low).abs(),
+        (high - prev_close).abs(),
+        (low - prev_close).abs(),
+    ], axis=1).max(axis=1)
+    return tr.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
 
 
 def _detect_choch(df: pd.DataFrame, lookback: int = 20) -> Optional[str]:
@@ -433,34 +470,84 @@ def _strategy_5_ema_pullback(df: pd.DataFrame) -> Optional[Dict]:
 
 def _strategy_6_ema_crossover(df: pd.DataFrame) -> Optional[Dict]:
     """
-    Cruce reciente de EMA rápida sobre lenta (cambio de fase de momento).
+    Cruce de EMA9/EMA21 -- "EMA Cross V3".
 
-    CAMBIO (fix win-rate, 2026-08-19 -- datos reales: 0% win rate en 5
-    señales, -$91.28, el peor resultado de las 7 estrategias con datos):
-    un cruce simple de EMAs sin filtro de tendencia es clásicamente
-    propenso a "whipsaws" (falsas señales) en mercados laterales -- se
-    agrega un filtro de tendencia de fondo con EMA100: solo se toma el
-    cruce alcista si el precio ya está por encima de la EMA100 (evita
-    comprar cruces alcistas en medio de una tendencia bajista mayor), y
-    simétricamente para el cruce bajista. La muestra es pequeña (n=5), así
-    que este cambio debe evaluarse con más datos antes de sacar
-    conclusiones definitivas -- pero la teoría (evitar contra-tendencia)
-    y el resultado observado apuntan en la misma dirección.
+    CAMBIO (fix win-rate, 2026-08-19, VERSIÓN ANTERIOR -- datos reales: 0%
+    win rate en 5 señales): se agregó un filtro de tendencia con EMA100
+    (solo tomar el cruce a favor de la tendencia de fondo). Con muestra
+    grande (n≈95 combinadas de dos periodos reales de 90+ señales cada
+    uno) esa versión se mantuvo en 22-27% de win rate -- la más débil de
+    las estrategias con datos suficientes en ambos periodos.
+
+    CAMBIO (2026-09-13 -- consulta a IA Mentor Core sobre alternativas de
+    mejora): la recomendación fue tratar esto como la ÚLTIMA prueba
+    controlada antes de eliminar la estrategia definitivamente, con el
+    diagnóstico de que "un cruce EMA9/EMA21 contiene poca información
+    sobre la calidad del movimiento posterior" -- el problema no es que
+    falte un filtro más, es que el cruce en sí es un evento de bajo
+    contenido informativo. Se implementa "EMA Cross V3", agregando -SOLO-
+    las dos condiciones adicionales que recomendó (deliberadamente NO se
+    agregan RSI/MACD/Volumen/etc. a la vez, para no convertir esto en una
+    colección de filtros sobreajustados al pasado):
+
+    1. Tendencia de fondo con EMA100 (ya existía, se mantiene igual).
+    2. Separación mínima entre EMA9/EMA21 normalizada por ATR(14):
+       abs(EMA9 - EMA21) / ATR(14) > EMA_CROSS_MIN_ATR_SEPARATION
+       (config, default 0.10 -- valor medio de la rejilla 0.05/0.10/0.15
+       que se sugirió probar). Busca descartar cruces producidos por
+       ruido de precio, no por un cambio de fase real.
+    3. Confirmación de volatilidad en expansión (no en compresión):
+       ATR(14) actual > mediana de ATR(14) en las últimas
+       EMA_CROSS_VOLATILITY_LOOKBACK velas (config, default 50).
+    4. Pendiente de EMA100 en la misma dirección de la señal (no solo la
+       posición del precio respecto a ella), medida entre el valor actual
+       y el de hace EMA_CROSS_SLOPE_LOOKBACK velas (config, default 10).
+
+    Si con estas condiciones el desempeño real (medido con expectancy en
+    R, no solo win rate, ver ADENDA correspondiente) sigue sin mejorar
+    tras una muestra suficiente, la recomendación explícita de IA Mentor
+    Core -- y la que se debe seguir -- es desactivar esta estrategia de
+    forma definitiva en vez de seguir agregando filtros.
     """
-    if len(df) < 105:
+    if len(df) < max(105, settings.EMA_CROSS_VOLATILITY_LOOKBACK + 20):
         return None
+
     fast = _ema(df["close"], 9)
     slow = _ema(df["close"], 21)
     trend_filter = _ema(df["close"], 100)
+    atr = _atr(df, 14)
     price = float(df["close"].iloc[-1])
+
+    if pd.isna(atr.iloc[-1]) or atr.iloc[-1] == 0:
+        return None
 
     cross_up = fast.iloc[-2] <= slow.iloc[-2] and fast.iloc[-1] > slow.iloc[-1]
     cross_down = fast.iloc[-2] >= slow.iloc[-2] and fast.iloc[-1] < slow.iloc[-1]
+    if not (cross_up or cross_down):
+        return None
 
-    if cross_up and price > trend_filter.iloc[-1]:
-        return {"direction": "BUY", "detail": "Cruce alcista EMA9/EMA21 con tendencia de fondo (>EMA100)"}
-    if cross_down and price < trend_filter.iloc[-1]:
-        return {"direction": "SELL", "detail": "Cruce bajista EMA9/EMA21 con tendencia de fondo (<EMA100)"}
+    # Condición 2: separación EMA9/EMA21 normalizada por ATR.
+    separation_atr = abs(fast.iloc[-1] - slow.iloc[-1]) / atr.iloc[-1]
+    enough_separation = separation_atr > settings.EMA_CROSS_MIN_ATR_SEPARATION
+
+    # Condición 3: volatilidad en expansión, no en compresión.
+    lookback = settings.EMA_CROSS_VOLATILITY_LOOKBACK
+    atr_median = atr.iloc[-lookback:].median()
+    expanding_volatility = bool(pd.notna(atr_median) and atr.iloc[-1] > atr_median)
+
+    # Condición 4: pendiente de EMA100 (no solo posición del precio).
+    slope_lookback = settings.EMA_CROSS_SLOPE_LOOKBACK
+    ema100_now = trend_filter.iloc[-1]
+    ema100_prev = trend_filter.iloc[-1 - slope_lookback]
+    slope_up = ema100_now > ema100_prev
+    slope_down = ema100_now < ema100_prev
+
+    if (cross_up and price > ema100_now and enough_separation
+            and expanding_volatility and slope_up):
+        return {"direction": "BUY", "detail": "EMA Cross V3: cruce alcista + separación ATR + tendencia y pendiente EMA100 alcistas"}
+    if (cross_down and price < ema100_now and enough_separation
+            and expanding_volatility and slope_down):
+        return {"direction": "SELL", "detail": "EMA Cross V3: cruce bajista + separación ATR + tendencia y pendiente EMA100 bajistas"}
     return None
 
 
@@ -491,18 +578,33 @@ def _strategy_8_bollinger(df: pd.DataFrame) -> Optional[Dict]:
 
 
 def _strategy_9_vwap_reaction(df: pd.DataFrame) -> Optional[Dict]:
+    """
+    CAMBIO (2026-09-13 -- consulta a IA Mentor Core): se agrega UN
+    contexto mínimo de tendencia (EMA50) para no operar cada cruce de
+    VWAP como si fuera equivalente, tal como se sugirió ("VWAP +
+    contexto", no "precio toca VWAP -> comprar/vender" a secas).
+    Deliberadamente se deja fuera el resto de la lista sugerida
+    (distancia, espacio hasta TP, volatilidad) para esta primera prueba
+    -- si el contexto de tendencia no es suficiente, se puede agregar el
+    siguiente factor de forma incremental y medible, no todos a la vez.
+    """
+    if len(df) < 55:
+        return None
     vwap = _vwap(df)
     if pd.isna(vwap.iloc[-1]):
         return None
+    ema50 = _ema(df["close"], 50)
     price = float(df["close"].iloc[-1])
     prev = float(df["close"].iloc[-2])
     vwap_now = float(vwap.iloc[-1])
     crossed_up = prev < vwap.iloc[-2] and price > vwap_now
     crossed_down = prev > vwap.iloc[-2] and price < vwap_now
-    if crossed_up:
-        return {"direction": "BUY", "detail": "Reacción alcista al cruzar VWAP"}
-    if crossed_down:
-        return {"direction": "SELL", "detail": "Reacción bajista al cruzar VWAP"}
+    trend_up = price > ema50.iloc[-1]
+    trend_down = price < ema50.iloc[-1]
+    if crossed_up and trend_up:
+        return {"direction": "BUY", "detail": "Reacción alcista al cruzar VWAP, a favor de tendencia EMA50"}
+    if crossed_down and trend_down:
+        return {"direction": "SELL", "detail": "Reacción bajista al cruzar VWAP, a favor de tendencia EMA50"}
     return None
 
 

@@ -287,23 +287,56 @@ class Settings(BaseSettings):
     # el problema no se resuelva manualmente. Ver scheduler._alert_autotrading_issue.
     MT5_AUTOTRADING_ALERT_COOLDOWN_MINUTES: int = int(os.getenv("MT5_AUTOTRADING_ALERT_COOLDOWN_MINUTES", "30"))
 
-    # CAMBIO (fix, 2026-09-12 -- evidencia real de DOS periodos
-    # independientes): la Estrategia 6 "Cruce de EMAs (Crossover de
-    # Momento)" tuvo win rate 22.2% (02-sep, n=~18) y 27.3% (07-11 sep,
-    # n=~77) -- consistentemente la peor de las 4 estrategias con datos en
-    # ambos periodos, incluso DESPUÉS del filtro de tendencia EMA100 que
-    # ya se le agregó el 2026-08-19. No es un problema de ejecución (a
-    # diferencia de la caída de Breakout/Silver Bullet, que sí coincide en
-    # fecha con las fallas técnicas de MT5/Twelve Data): esta estrategia
-    # rinde mal de forma estructural. Se desactiva por defecto aquí en
-    # vez de borrar el código, para poder reactivarla fácil (quitándola
-    # de esta lista, o vía variable de entorno) si se re-optimiza y se
-    # quiere volver a probar. NO es una garantía de que las estrategias
-    # restantes vayan a tener buen desempeño -- solo se retira la que ya
-    # demostró ser la más débil con datos reales suficientes.
-    DISABLED_STRATEGY_IDS: List[int] = [
-        int(x) for x in os.getenv("DISABLED_STRATEGY_IDS", "6").split(",") if x.strip()
-    ]
+    # HISTORIAL: (2026-09-12) con evidencia real de dos periodos, la
+    # Estrategia 6 "Cruce de EMAs" tuvo win rate 22.2%/27.3% -- la más
+    # débil de forma consistente -- y se desactivó por defecto aquí.
+    # (2026-09-13, tras consultar a IA Mentor Core) se decidió NO dejarla
+    # desactivada sin más: se reescribió como "EMA Cross V3" (ver abajo y
+    # _strategy_6_ema_crossover en strategy_engine.py) como ÚLTIMA prueba
+    # controlada antes de descartarla definitivamente. Si tras acumular
+    # muestra suficiente (ver ADENDA_REVISION_CODIGO_REAL /
+    # AJUSTES_RECOMENDADOS, ~100+ señales) la expectancy en R sigue sin
+    # ser positiva, vuelva a poner "6" en esta lista para desactivarla.
+    # FIX (2026-09-13 -- error real en despliegue del usuario):
+    # `DISABLED_STRATEGY_IDS=6` en el `.env` tronaba con
+    # "pydantic_core...ValidationError: Input should be a valid list
+    # [type=list_type, input_value=6, input_type=int]".
+    #
+    # Causa real (más profunda de lo que parece): pydantic-settings trata
+    # cualquier campo de tipo lista/dict como "complejo" e intenta
+    # decodificarlo como JSON ANTES de que corra cualquier validador
+    # propio de esta clase -- sin importar si el valor viene de una
+    # variable de entorno real o del archivo `.env` (ambas rutas pasan
+    # por el mismo mecanismo). `"6"` es JSON válido (el entero 6), así
+    # que llegaba como `6`, no como `[6]`, y pydantic lo rechazaba. Un
+    # primer intento de arreglo con un `field_validator(mode="before")`
+    # tampoco alcanzó: para valores como `"6,7"` o `""`, el JSON es
+    # inválido y pydantic-settings lanza `SettingsError` directamente,
+    # sin llegar siquiera a ejecutar el validador.
+    #
+    # La única forma robusta de evitarlo por completo es que el campo NO
+    # sea de tipo lista/dict para pydantic-settings: se guarda como `str`
+    # tal cual viene del `.env` (sin importar su contenido, un string
+    # nunca se intenta decodificar como JSON), y se expone la lista ya
+    # parseada como una property de solo lectura (`disabled_strategy_ids`,
+    # en minúscula para no confundirla con el campo de configuración).
+    DISABLED_STRATEGY_IDS: str = ""
+
+    @property
+    def disabled_strategy_ids(self) -> List[int]:
+        """Lista de IDs de estrategia desactivadas, ya parseada. Usar esto, no `DISABLED_STRATEGY_IDS` directamente."""
+        return [int(x) for x in self.DISABLED_STRATEGY_IDS.split(",") if x.strip()]
+
+    # --- EMA Cross V3 (Estrategia 6) -- parámetros de la prueba controlada ---
+    # Separación mínima entre EMA9/EMA21 normalizada por ATR(14). Valor
+    # medio de la rejilla 0.05/0.10/0.15 sugerida por IA Mentor Core;
+    # ajustable sin tocar código si se decide correr la rejilla completa.
+    EMA_CROSS_MIN_ATR_SEPARATION: float = float(os.getenv("EMA_CROSS_MIN_ATR_SEPARATION", "0.10"))
+    # Ventana (en velas) para la mediana de ATR usada como referencia de
+    # "volatilidad normal" -- el cruce solo cuenta si el ATR actual la supera.
+    EMA_CROSS_VOLATILITY_LOOKBACK: int = int(os.getenv("EMA_CROSS_VOLATILITY_LOOKBACK", "50"))
+    # Velas hacia atrás para medir la pendiente de EMA100.
+    EMA_CROSS_SLOPE_LOOKBACK: int = int(os.getenv("EMA_CROSS_SLOPE_LOOKBACK", "10"))
 
     # Verificación de persistencia (señales activas en memoria vs Excel), en minutos.
     PERSISTENCE_CHECK_INTERVAL_MINUTES: int = int(os.getenv("PERSISTENCE_CHECK_INTERVAL_MINUTES", "30"))
