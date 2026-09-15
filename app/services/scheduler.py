@@ -384,16 +384,62 @@ class SchedulerService:
             )
             sys.exit(0)
         else:
+            # FIX (2026-09-14 -- error real en despliegue del usuario):
+            # `os.execv(sys.executable, [sys.executable] + sys.argv)`
+            # relanzaba el proceso, pero SIEMPRE fallaba con:
+            #   AttributeError: module 'logging' has no attribute
+            #   'Formatter' (... prevents importing that standard
+            #   library module)
+            #
+            # Causa real: el proceso se inició con
+            # `python -m uvicorn app.main:app --host ... --reload`. Al
+            # usar `-m`, Python reescribe `sys.argv[0]` internamente con
+            # la ruta real del archivo ejecutado, algo como
+            # `...\venv\Lib\site-packages\uvicorn\__main__.py` -- ya NO
+            # queda ningún rastro de que originalmente se invocó con
+            # `-m`. Si luego se re-ejecuta ese `sys.argv` tal cual con
+            # `os.execv` (como venía haciendo este método), Python ya NO
+            # lo trata como "-m uvicorn": lo ejecuta como un script
+            # suelto, y en ese modo agrega la CARPETA que contiene ese
+            # script (`site-packages/uvicorn/`) al principio de
+            # `sys.path`. Esa carpeta tiene su propio archivo interno
+            # `logging.py` (parte normal de uvicorn) -- y cualquier
+            # `import logging` genérico de la librería estándar (lo hace
+            # `concurrent.futures` al arrancar `asyncio`) encuentra ESE
+            # archivo primero en vez del módulo real, y truena.
+            #
+            # Esto explica por qué el arranque manual inicial SÍ
+            # funcionaba (se invocaba correctamente con `-m`) pero el
+            # auto-relanzado programado fallaba siempre: son dos rutas de
+            # código distintas para lanzar el mismo proceso.
+            #
+            # Corrección: reconstruir explícitamente la invocación como
+            # `python -m uvicorn <resto-de-argumentos>` en vez de repetir
+            # `sys.argv` a ciegas. Se detecta el patrón problemático
+            # (argv[0] apuntando al `__main__.py` de uvicorn dentro de
+            # site-packages) y en ese caso se fuerza `-m uvicorn`; si el
+            # proceso se inició de otra forma (ej. un script propio), se
+            # respeta el comportamiento anterior tal cual.
+            exec_args = [sys.executable] + sys.argv
+            argv0_normalized = sys.argv[0].replace("/", os.sep).lower()
+            if argv0_normalized.endswith(os.sep + "uvicorn" + os.sep + "__main__.py"):
+                exec_args = [sys.executable, "-m", "uvicorn"] + sys.argv[1:]
+                logger.info(
+                    "[REINICIO PROGRAMADO] Detectado arranque original vía "
+                    "'-m uvicorn' -- se reconstruye el relanzado igual "
+                    "(en vez de repetir sys.argv tal cual) para evitar que "
+                    "'uvicorn/__main__.py' se ejecute como script suelto."
+                )
             logger.warning(
-                f"[REINICIO PROGRAMADO] Relanzando el proceso ahora con el mismo comando "
-                f"con el que se inició ({sys.executable} {' '.join(sys.argv)})..."
+                f"[REINICIO PROGRAMADO] Relanzando el proceso ahora con "
+                f"({' '.join(exec_args)})..."
             )
             # os.execv reemplaza la imagen del proceso actual (mismo PID)
             # por una nueva ejecución de Python con los mismos argumentos
             # -- no requiere ningún supervisor externo. El proceso
             # arranca desde cero (nuevo event loop, nueva conexión MT5,
             # etc.) y recarga todo el estado desde Excel normalmente.
-            os.execv(sys.executable, [sys.executable] + sys.argv)
+            os.execv(sys.executable, exec_args)
 
     async def _send_backtest_email(self, result, report_type: str):
         """Send backtesting report via email."""
