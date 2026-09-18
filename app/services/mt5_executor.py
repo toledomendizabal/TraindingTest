@@ -277,25 +277,61 @@ class MT5ExecutorService:
     # ------------------------------------------------------------------
     def _resolve_symbol(self, asset: str) -> Optional[str]:
         """
-        Resuelve el símbolo real usado por el bróker. Algunos brokers
-        agregan sufijos (ej. 'EURUSD.pro', 'EURUSDm', 'XAUUSDc'). Se busca
-        primero el símbolo exacto tal como está en `asset`, y si no existe,
-        se busca uno que empiece igual entre todos los símbolos disponibles.
+        Resuelve el símbolo real usado por el bróker.
+
+        FIX (2026-09-17 -- error real confirmado en logs: "no se encontró
+        ningún símbolo que coincida con 'US500Cash'"): la versión anterior
+        solo intentaba `broker.startswith(asset)`, pensado para brokers
+        que AGREGAN un sufijo (ej. pedimos 'EURUSD' y el bróker tiene
+        'EURUSD.pro' -- broker es más largo). Pero para los índices el
+        caso real es el CONTRARIO: pedimos 'US500Cash' y el bróker tiene
+        'US500' -- el nombre del bróker es más CORTO que el nuestro, así
+        que `'US500'.startswith('US500Cash')` es `False` y nunca
+        resolvía, aunque el símbolo sí exista y ya se esté usando
+        correctamente para precios en `market_data.py` (que sí tiene su
+        propio sistema de alias). Ahora se agregan, en orden:
+        1. `settings.MT_SYMBOL_ALIASES` (mapeo explícito del usuario,
+           misma fuente de verdad que ya usa `market_data.py` -- evita
+           tener que mantener el mapeo por duplicado en dos archivos).
+        2. Coincidencia exacta (como antes).
+        3. Prefijo en cualquiera de las dos direcciones: el símbolo del
+           bróker empieza con el nuestro (sufijo del bróker, caso
+           original) O el nuestro empieza con el del bróker (nuestro
+           nombre tiene una palabra de más, ej. 'Cash', 'Index').
         """
+        alias = settings.MT_SYMBOL_ALIASES.get(asset)
+        if alias:
+            info = mt5.symbol_info(alias)
+            if info is not None:
+                if not info.visible:
+                    mt5.symbol_select(alias, True)
+                logger.info(f"MT5: símbolo '{asset}' resuelto como '{alias}' (alias configurado en MT_SYMBOL_ALIASES)")
+                return alias
+            logger.warning(
+                f"MT5: MT_SYMBOL_ALIASES tiene '{asset}' -> '{alias}', pero ese símbolo "
+                f"no existe en este bróker. Revise el alias configurado."
+            )
+
         info = mt5.symbol_info(asset)
         if info is not None:
             if not info.visible:
                 mt5.symbol_select(asset, True)
             return asset
 
-        all_symbols = mt5.symbols_get()
-        for s in all_symbols or []:
-            if s.name.upper().startswith(asset.upper()):
+        asset_upper = asset.upper()
+        all_symbols = mt5.symbols_get() or []
+        for s in all_symbols:
+            name_upper = s.name.upper()
+            if name_upper.startswith(asset_upper) or asset_upper.startswith(name_upper):
                 mt5.symbol_select(s.name, True)
-                logger.info(f"MT5: símbolo '{asset}' resuelto como '{s.name}' (sufijo del bróker)")
+                logger.info(f"MT5: símbolo '{asset}' resuelto como '{s.name}' (coincidencia de prefijo)")
                 return s.name
 
-        logger.error(f"MT5: no se encontró ningún símbolo que coincida con '{asset}' en este bróker.")
+        logger.error(
+            f"MT5: no se encontró ningún símbolo que coincida con '{asset}' en este bróker. "
+            f"Configure un alias explícito en MT_SYMBOL_ALIASES (.env) si el nombre no se "
+            f"parece en nada (ej. 'US500Cash' -> 'US500')."
+        )
         return None
 
     def _find_position(self, ticket: int):
