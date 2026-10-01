@@ -12,6 +12,11 @@ class Settings(BaseSettings):
     TELEGRAM_CHAT_ID: str = ""
 
     # Twelve Data API
+    # CAMBIO (2026-10-01, a pedido del usuario): "solo MT5". Twelve Data queda
+    # DESACTIVADO por defecto: precios e historial salen exclusivamente de los
+    # archivos que exporta PriceExporter desde la terminal MT5. Para
+    # reactivarlo como respaldo: TWELVE_DATA_ENABLED=true en .env.
+    TWELVE_DATA_ENABLED: bool = False
     TWELVE_DATA_API_KEY: str = "e046f5d7b689457fb44308ef76dc434c"
 
     # Trading Configuration
@@ -98,8 +103,14 @@ class Settings(BaseSettings):
     # solo par). Se sube el inicio a las 8:00 UTC, justo cuando
     # get_current_session() empieza a clasificar como "London", para
     # excluir por completo la sesión Tokyo del motor de señales.
-    SESSION_START_HOUR_UTC: int = 8   # Inicio de la sesión de Londres (excluye Tokyo por completo)
-    SESSION_END_HOUR_UTC: int = 21    # Cierre de Nueva York
+    # CAMBIO (2026-10-01, a pedido del usuario): ventana ampliada a
+    # 01:00-22:00 UTC y SOLO de domingo a viernes (sábado cerrado). El
+    # historial de arriba (Tokyo = peor sesión) sigue siendo válido: se
+    # amplía por decisión explícita del usuario; vigila el WR de 01-08 UTC.
+    # Días en formato datetime.weekday(): lunes=0 ... sábado=5, domingo=6.
+    SESSION_START_HOUR_UTC: int = 1   # inclusive (01:00 UTC)
+    SESSION_END_HOUR_UTC: int = 22    # exclusivo (última hora válida 21:59 UTC)
+    SESSION_ALLOWED_WEEKDAYS: List[int] = [6, 0, 1, 2, 3, 4]  # domingo a viernes
 
     # Minimum Stop Loss distances (in pips) per asset class.
     # Subidos respecto al valor anterior (6 pips FX) para que el spread no
@@ -159,9 +170,13 @@ class Settings(BaseSettings):
     # signals_tracking.xlsx: % de señales que llegan a take_profit_1 vs las
     # que cierran en stop_loss), vale la pena bajarlo de nuevo con esa
     # evidencia fresca en mano.
-    TP1_R_MULTIPLE: float = 3.0
-    TP2_R_MULTIPLE: float = 6.0
-    TP3_R_MULTIPLE: float = 10.0
+    #
+    # CAMBIO (a pedido del usuario, 2026-10-01): operaciones ajustadas a
+    # 1:2 (TP1), 1:3 (TP2) y 1:5 (TP3). Sustituye al esquema 1:3 / 1:6 / 1:10
+    # anterior, que era difícil de alcanzar (ver análisis de arriba).
+    TP1_R_MULTIPLE: float = 2.0
+    TP2_R_MULTIPLE: float = 3.0
+    TP3_R_MULTIPLE: float = 5.0
 
     # Percentage of the position closed at each take-profit level.
     # Debe sumar 100.
@@ -252,7 +267,30 @@ class Settings(BaseSettings):
     # Watch) y `market_data.py` lo probará primero.
     # Ejemplo: {"WTI": "USOUSD", "BRENT": "UKOUSD", "COPPER": "XCUUSD",
     #           "STOXX50Cash": "STOXX50"}
-    MT_SYMBOL_ALIASES: dict = {}
+    #
+    # CAMBIO (2026-10-01): alias configurados según el mt4_prices.csv real del
+    # bróker (MEXAtlantic-Demo): los pares FX y los metales llevan el sufijo
+    # "..." (ej. "EURUSD...") y US30/US500 se llaman igual pero sin "Cash".
+    # PENDIENTES (no aparecen en el archivo, hay que agregarlos a Market Watch
+    # y al EA): US100Cash, GER40Cash, STOXX50Cash, WTI, BRENT, COPPER.
+    # OJO: "NDAQ.OQ" del archivo es la ACCIÓN de Nasdaq Inc. (~91 USD), NO el
+    # índice Nasdaq-100, por eso NO se usa como alias de US100Cash.
+    MT_SYMBOL_ALIASES: dict = {
+        # Divisas (sufijo "...")
+        "EURUSD": "EURUSD...", "GBPUSD": "GBPUSD...", "USDCHF": "USDCHF...",
+        "NZDUSD": "NZDUSD...", "USDJPY": "USDJPY...", "AUDUSD": "AUDUSD...",
+        "USDCAD": "USDCAD...", "EURGBP": "EURGBP...", "EURJPY": "EURJPY...",
+        "EURCHF": "EURCHF...", "GBPJPY": "GBPJPY...", "CHFJPY": "CHFJPY...",
+        "AUDJPY": "AUDJPY...", "CADJPY": "CADJPY...", "NZDJPY": "NZDJPY...",
+        "AUDNZD": "AUDNZD...", "AUDCHF": "AUDCHF...", "GBPCHF": "GBPCHF...",
+        "CADCHF": "CADCHF...",
+        # Cruces que el bróker exporta aunque no estén en ACTIVE_ASSETS
+        "EURAUD": "EURAUD...", "EURCAD": "EURCAD...", "AUDCAD": "AUDCAD...",
+        # Metales
+        "XAUUSD": "XAUUSD...", "XAGUSD": "XAGUSD...",
+        # Índices (sin "Cash" y sin sufijo)
+        "US30Cash": "US30", "US500Cash": "US500",
+    }
 
     # --- Reinicio programado del proceso + keep-alive de MT5 ---
     # CAMBIO (a pedido del usuario, 2026-08-12): reinicio limpio cada N

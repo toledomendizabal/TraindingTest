@@ -107,9 +107,9 @@ function SignalsPage() {
                 <th className="text-left py-3 px-3">Dir.</th>
                 <th className="text-right py-3 px-3">Entrada</th>
                 <th className="text-right py-3 px-3">SL</th>
-                <th className="text-right py-3 px-3">TP1 (1:3)</th>
-                <th className="text-right py-3 px-3">TP2 (1:6)</th>
-                <th className="text-right py-3 px-3">TP3 (1:10)</th>
+                <th className="text-right py-3 px-3">TP1 (1:2)</th>
+                <th className="text-right py-3 px-3">TP2 (1:3)</th>
+                <th className="text-right py-3 px-3">TP3 (1:5)</th>
                 <th className="text-right py-3 px-3">Lote</th>
                 <th className="text-right py-3 px-3">Ind.</th>
                 <th className="text-right py-3 px-3">SMC Qual.</th>

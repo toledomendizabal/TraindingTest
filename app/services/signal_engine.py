@@ -159,7 +159,7 @@ class SignalEngine:
                 # logger de consola está configurado en INFO). Elevado a INFO
                 # para que sea diagnosticable sin tener que abrir los logs en
                 # disco.
-                logger.info(f"[REJECT] {asset}: sin datos históricos (MT4 no conectado o Twelve Data sin respuesta).")
+                logger.info(f"[REJECT] {asset}: sin datos históricos (sin archivo de historial MT5 para este símbolo; Twelve Data desactivado).")
                 return signals
 
             results = strategy_engine.evaluate_independent(asset, df)
@@ -259,12 +259,13 @@ class SignalEngine:
         # Mexico City. Si pruebas por la tarde/noche (hora de México),
         # este filtro bloqueará TODAS las señales sin importar nada más.
         if settings.SESSION_FILTER_ENABLED:
-            current_hour = datetime.utcnow().hour
-            if not (settings.SESSION_START_HOUR_UTC <= current_hour < settings.SESSION_END_HOUR_UTC):
+            _now = datetime.utcnow()
+            current_hour = _now.hour
+            if not market_data_service.is_trading_window_open(_now):
                 logger.info(
                     f"[REJECT] {asset}: fuera de la ventana de sesión "
-                    f"({settings.SESSION_START_HOUR_UTC}:00-{settings.SESSION_END_HOUR_UTC}:00 UTC). "
-                    f"Hora actual UTC: {current_hour}:00."
+                    f"({settings.SESSION_START_HOUR_UTC}:00-{settings.SESSION_END_HOUR_UTC}:00 UTC, domingo a viernes). "
+                    f"Ahora UTC: {_now:%a %H:%M}."
                 )
                 return None
 
@@ -362,8 +363,7 @@ class SignalEngine:
         # se analizaron y cuántas señales se generaron, para poder detectar
         # de inmediato si el motor sigue corriendo pero sin producir señales.
         current_hour = datetime.utcnow().hour
-        session_ok = (not settings.SESSION_FILTER_ENABLED) or \
-            (settings.SESSION_START_HOUR_UTC <= current_hour < settings.SESSION_END_HOUR_UTC)
+        session_ok = market_data_service.is_trading_window_open()
 
         for asset in settings.ACTIVE_ASSETS:
             asset_signals = await self.analyze_asset(asset)

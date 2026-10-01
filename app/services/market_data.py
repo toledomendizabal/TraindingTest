@@ -137,23 +137,53 @@ class MarketDataService:
                 result.append(c)
         return result
 
-    def _find_mt_file_by_prefix(self, prefix: str) -> Optional[str]:
+    _TF_SUFFIXES = ("_30M", "_1H", "_4H", "_5M", "_15M", "_1M", "_1D")
+
+    def _find_mt_file_by_prefix(self, prefix: str, interval: Optional[str] = None) -> Optional[str]:
         """
         Última opción: si ningún nombre candidato exacto coincide, busca en
         el directorio de archivos comunes de MT4/MT5 algún archivo
         `history_<algo que empiece con prefix>` -- cubre sufijos de bróker
         que no anticipamos (ej. "WTIUSD", "WTI.a", "WTIcash").
+
+        CAMBIO (2026-10-01): antes devolvía el PRIMER archivo que coincidiera
+        según el orden de os.listdir, que podía ser el de otro timeframe
+        (ej. history_X_4h.csv al pedir 30m). Ahora se prefiere (1) el archivo
+        del timeframe pedido y (2) el archivo base sin sufijo de timeframe; un
+        archivo de otro timeframe NUNCA se usa como respaldo.
         """
         try:
             if not settings.MT4_FILES_PATH or not os.path.isdir(settings.MT4_FILES_PATH):
                 return None
             target = f"HISTORY_{prefix.upper()}"
-            for fname in os.listdir(settings.MT4_FILES_PATH):
-                if fname.upper().startswith(target):
+            want_tf = f"_{interval.upper()}.CSV" if interval else None
+            base_match = None
+            for fname in sorted(os.listdir(settings.MT4_FILES_PATH)):
+                up = fname.upper()
+                if not up.startswith(target) or not up.endswith(".CSV"):
+                    continue
+                if want_tf and up.endswith(want_tf):
                     return fname
+                stem = up[:-4]
+                if not stem.endswith(self._TF_SUFFIXES) and base_match is None:
+                    base_match = fname
+            return base_match
         except Exception:
             pass
         return None
+
+    def is_trading_window_open(self, now: Optional[datetime] = None) -> bool:
+        """
+        Ventana operativa en UTC: [SESSION_START_HOUR_UTC, SESSION_END_HOUR_UTC)
+        y solo en los días de SESSION_ALLOWED_WEEKDAYS (domingo a viernes).
+        Si SESSION_FILTER_ENABLED es False, siempre devuelve True.
+        """
+        if not settings.SESSION_FILTER_ENABLED:
+            return True
+        now = now or datetime.utcnow()
+        if now.weekday() not in settings.SESSION_ALLOWED_WEEKDAYS:
+            return False
+        return settings.SESSION_START_HOUR_UTC <= now.hour < settings.SESSION_END_HOUR_UTC
 
     def _get_mt4_price(self, asset: str) -> Optional[Dict]:
         """Try to get price from MT4/MT5 common files."""
@@ -300,6 +330,13 @@ class MarketDataService:
         if cached:
             return cached
 
+        # CAMBIO (2026-10-01, "solo MT5"): con Twelve Data desactivado no hay
+        # respaldo por API. Se devuelve None (nunca un precio viejo) para que
+        # el monitor de posiciones no evalúe SL/TP contra datos obsoletos.
+        if not settings.TWELVE_DATA_ENABLED:
+            logger.debug(f"[MT_ONLY] {asset}: sin precio en mt4_prices.csv y Twelve Data está desactivado.")
+            return None
+
         price_cache_key = f"{asset}_price"
         now = datetime.now()
 
@@ -384,7 +421,7 @@ class MarketDataService:
                         history_file = candidate
                         break
                 if history_file is None:
-                    by_prefix = self._find_mt_file_by_prefix(self._candidate_mt_symbols(asset)[0])
+                    by_prefix = self._find_mt_file_by_prefix(self._candidate_mt_symbols(asset)[0], interval)
                     if by_prefix:
                         history_file = os.path.join(settings.MT4_FILES_PATH, by_prefix)
                         logger.info(f"[MT_SYMBOL_MATCH] {asset}: no hubo coincidencia exacta, se usó '{by_prefix}' por prefijo.")
@@ -419,10 +456,16 @@ class MarketDataService:
                         f"(candidatos probados: {self._candidate_mt_symbols(asset)}). "
                         f"Verifica que el símbolo esté agregado en Market Watch de tu terminal, "
                         f"o configura un alias en settings.MT_SYMBOL_ALIASES si tu bróker usa "
-                        f"otro nombre. Se intentará Twelve Data como respaldo."
+                        f"otro nombre. "
+                        + ("Se intentará Twelve Data como respaldo." if settings.TWELVE_DATA_ENABLED
+                           else "Twelve Data está desactivado (solo MT5): el activo se omite.")
                     )
             except Exception as e:
                 logger.warning(f"Failed to read MT4 history for {asset}: {e}")
+
+        # CAMBIO (2026-10-01, "solo MT5"): sin respaldo de Twelve Data.
+        if not settings.TWELVE_DATA_ENABLED:
+            return None
 
         # 2. Backup: Twelve Data API with simple cache
         if cache_key in self._history_cache:
