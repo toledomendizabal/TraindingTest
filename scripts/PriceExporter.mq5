@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, TradingSignalPro"
 #property link      "https://manus.im"
-#property version   "2.20"
+#property version   "2.21"
 #property strict
 
 // V2.0: Exports Real-time prices AND Candle History for analysis.
@@ -44,7 +44,7 @@
 //    si este EA dejo de correr o si AutoTrading se desactivo, con solo
 //    leer un CSV, sin depender de la libreria MetaTrader5 de Python.
 
-// V2.2 (2026-10-01) -- simbolos con sufijo del broker ("..."):
+// V2.2 (2026-10-01; v2.21 quita el sufijo de los nombres de archivo) -- simbolos con sufijo del broker ("..."):
 //
 // Tras reinstalar el ambiente, el broker (MEXAtlantic-Demo) publica casi todos
 // los instrumentos con sufijo "..." (EURUSD..., XAUUSD..., etc.) y el
@@ -71,7 +71,9 @@
 //    con el mercado cerrado (fin de semana) TimeCurrent() no avanza y el
 //    historial nunca se refrescaba.
 // 6) Nombres de archivo: ademas de "/" y "\\" se sanean : * ? " < > |
-//    (los puntos del sufijo "..." son validos: history_EURUSD....csv).
+//    Y SE QUITA EL SUFIJO "...": history_EURUSD.csv (no history_EURUSD....csv).
+//    MT5 rechaza ".." en nombres de archivo, por eso esos simbolos nunca
+//    generaban historial. mt4_prices.csv conserva el nombre completo.
 //
 input int ExportIntervalSeconds = 1;          // Precio en tiempo real
 input int HistoryExportIntervalSeconds = 300; // Historial (antes: igual a ExportIntervalSeconds, cada 1s)
@@ -140,6 +142,12 @@ bool HasSuffix(const string name, const string suffix)
 
 //+------------------------------------------------------------------+
 //| Nombre de simbolo seguro para usar dentro de un nombre de archivo |
+//| FIX 2026-10-01: MT5 NO permite ".." en nombres de archivo (lo     |
+//| trata como recorrido de directorios) y FileOpen devolvia          |
+//| INVALID_HANDLE para "history_EURUSD....csv": por eso los simbolos |
+//| con sufijo "..." nunca generaban historial. Ahora se QUITA el     |
+//| sufijo del nombre del archivo: EURUSD... -> history_EURUSD.csv.   |
+//| (mt4_prices.csv sigue con el nombre completo del broker.)         |
 //+------------------------------------------------------------------+
 string SafeFileSymbol(string symbol)
 {
@@ -152,6 +160,17 @@ string SafeFileSymbol(string symbol)
    StringReplace(symbol, "<", "");
    StringReplace(symbol, ">", "");
    StringReplace(symbol, "|", "");
+
+   // Quita el sufijo del broker (ej. "...")
+   if(HasSuffix(symbol, SymbolSuffix))
+      symbol = StringSubstr(symbol, 0, StringLen(symbol) - StringLen(SymbolSuffix));
+
+   // Nunca dejar ".." ni puntos al final (Windows los descarta / MT5 los rechaza)
+   while(StringFind(symbol, "..") >= 0)
+      StringReplace(symbol, "..", ".");
+   while(StringLen(symbol) > 0 && StringSubstr(symbol, StringLen(symbol) - 1, 1) == ".")
+      symbol = StringSubstr(symbol, 0, StringLen(symbol) - 1);
+
    return(symbol);
 }
 

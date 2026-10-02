@@ -27,10 +27,14 @@ SUFFIX = "..."
 
 
 def ea_safe_symbol(sym: str) -> str:
-    """Réplica de SafeFileSymbol() del EA."""
+    """Réplica de SafeFileSymbol() del EA v2.2 (quita el sufijo y nunca deja '..')."""
     for ch in '/\\:*?"<>|':
         sym = sym.replace(ch, "")
-    return sym
+    if SUFFIX and sym.endswith(SUFFIX):
+        sym = sym[: -len(SUFFIX)]
+    while ".." in sym:
+        sym = sym.replace("..", ".")
+    return sym.rstrip(".")
 
 
 def ea_files(sym: str, daily=True, m5=False):
@@ -53,7 +57,7 @@ def _df(base, n=80):
 
 class TestStaticEA:
     def test_version_and_suffix_inputs(self):
-        assert '#property version   "2.20"' in MQ5
+        assert '#property version   "2.21"' in MQ5
         assert re.search(r'input string SymbolSuffix = "\.\.\."', MQ5)
         assert "input bool   AutoSelectSuffixSymbols = true" in MQ5
         assert "SymbolsTotal(false)" in MQ5          # recorre TODOS los símbolos del servidor
@@ -68,6 +72,14 @@ class TestStaticEA:
         assert "if(!SymbolIsSynchronized(symbol)) continue;" not in MQ5
         assert "if(copied <= 0) return(false);" in MQ5
         assert MQ5.index("CopyRates(symbol, period") < MQ5.index("FileOpen(fileName")
+
+    def test_suffix_stripped_from_file_names(self):
+        body = MQ5[MQ5.index("string SafeFileSymbol"):]
+        body = body[:body.index("\n}\n")]
+        assert "HasSuffix(symbol, SymbolSuffix)" in body
+        assert 'StringFind(symbol, "..")' in body        # nunca deja ".." en el nombre
+        code_only = re.sub(r"//[^\n]*", "", MQ5)
+        assert "history_EURUSD...." not in code_only      # solo puede aparecer en comentarios
 
     def test_uses_timelocal_for_history_timer(self):
         assert "datetime now = TimeLocal();" in MQ5
@@ -93,9 +105,10 @@ class TestEAFilesResolvedByBackend:
             for i, name in enumerate(ea_files(sym)):
                 _df(bid * (1 + i * 0.001)).to_csv(tmp_path / name, index=False)
 
-        # Sufijo con puntos: nombre de archivo válido y esperado
-        assert (tmp_path / "history_EURUSD....csv").exists()
-        assert (tmp_path / "history_EURUSD..._1d.csv").exists()
+        # El EA quita el sufijo: MT5 rechaza ".." en nombres de archivo
+        assert (tmp_path / "history_EURUSD.csv").exists()
+        assert (tmp_path / "history_EURUSD_1d.csv").exists()
+        assert not any(".." in p.name for p in tmp_path.iterdir()), "ningún archivo debe contener '..'"
 
         svc = MarketDataService()
         suffixed = [s for s in rows if s.endswith(SUFFIX)]
@@ -111,24 +124,39 @@ class TestEAFilesResolvedByBackend:
     def test_daily_file_is_used_for_1d_not_m1(self, tmp_path, monkeypatch):
         monkeypatch.setattr(settings, "MT4_FILES_PATH", str(tmp_path))
         monkeypatch.setattr(settings, "TWELVE_DATA_ENABLED", False)
-        _df(1.10).to_csv(tmp_path / "history_EURUSD....csv", index=False)       # M1
-        _df(1.50).to_csv(tmp_path / "history_EURUSD..._1d.csv", index=False)    # D1
+        _df(1.10).to_csv(tmp_path / "history_EURUSD.csv", index=False)       # M1
+        _df(1.50).to_csv(tmp_path / "history_EURUSD_1d.csv", index=False)    # D1
         svc = MarketDataService()
         d1 = asyncio.run(svc.get_time_series("EURUSD", "1d"))
         m1 = asyncio.run(svc.get_time_series("EURUSD", "5m"))
         assert d1["close"].iloc[0] > 1.4 and m1["close"].iloc[0] < 1.2
 
+    def test_legacy_suffixed_file_names_still_accepted(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(settings, "MT4_FILES_PATH", str(tmp_path))
+        monkeypatch.setattr(settings, "TWELVE_DATA_ENABLED", False)
+        _df(1.33).to_csv(tmp_path / "history_EURUSD....csv", index=False)
+        df = asyncio.run(MarketDataService().get_time_series("EURUSD", "5m"))
+        assert df is not None and df["close"].iloc[0] > 1.3
+
+    def test_stripped_name_has_priority_over_legacy(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(settings, "MT4_FILES_PATH", str(tmp_path))
+        monkeypatch.setattr(settings, "TWELVE_DATA_ENABLED", False)
+        _df(1.33).to_csv(tmp_path / "history_EURUSD....csv", index=False)
+        _df(1.11).to_csv(tmp_path / "history_EURUSD.csv", index=False)
+        df = asyncio.run(MarketDataService().get_time_series("EURUSD", "5m"))
+        assert df["close"].iloc[0] < 1.2
+
     def test_m5_file_used_when_exporter_writes_it(self, tmp_path, monkeypatch):
         monkeypatch.setattr(settings, "MT4_FILES_PATH", str(tmp_path))
         monkeypatch.setattr(settings, "TWELVE_DATA_ENABLED", False)
-        _df(1.10).to_csv(tmp_path / "history_EURUSD....csv", index=False)
-        _df(1.25).to_csv(tmp_path / "history_EURUSD..._5m.csv", index=False)
+        _df(1.10).to_csv(tmp_path / "history_EURUSD.csv", index=False)
+        _df(1.25).to_csv(tmp_path / "history_EURUSD_5m.csv", index=False)
         df = asyncio.run(MarketDataService().get_time_series("EURUSD", "5m"))
         assert df["close"].iloc[0] > 1.2
 
     @pytest.mark.parametrize("raw,expected", [
-        ("EURUSD...", "EURUSD..."), ("US30", "US30"), ("NDAQ.OQ", "NDAQ.OQ"),
-        ("EUR/USD...", "EURUSD..."), ('A:B*C?D"E<F>G|H', "ABCDEFGH"),
+        ("EURUSD...", "EURUSD"), ("XAUUSD...", "XAUUSD"), ("US30", "US30"), ("NDAQ.OQ", "NDAQ.OQ"),
+        ("EUR/USD...", "EURUSD"), ("EURUSD....", "EURUSD"), ('A:B*C?D"E<F>G|H', "ABCDEFGH"),
     ])
     def test_safe_symbol_matches_ea_logic(self, raw, expected):
         assert ea_safe_symbol(raw) == expected

@@ -137,6 +137,24 @@ class MarketDataService:
                 result.append(c)
         return result
 
+    def _candidate_history_symbols(self, asset: str) -> List[str]:
+        """
+        Nombres candidatos para los archivos history_*.csv. PriceExporter v2.2+
+        QUITA el sufijo del bróker del nombre del archivo (MT5 rechaza ".."),
+        así que "EURUSD..." se busca primero como "EURUSD". El nombre con
+        sufijo se conserva al final solo por compatibilidad con archivos viejos.
+        (Los precios de mt4_prices.csv siguen usando _candidate_mt_symbols.)
+        """
+        suffix = (getattr(settings, "MT_SYMBOL_SUFFIX", "") or "").upper()
+        result: List[str] = []
+        for c in self._candidate_mt_symbols(asset):
+            stripped = c[: -len(suffix)] if suffix and c.endswith(suffix) else c
+            stripped = stripped.rstrip(".")
+            for name in (stripped, c):
+                if name and name not in result:
+                    result.append(name)
+        return result
+
     _TF_SUFFIXES = ("_30M", "_1H", "_4H", "_5M", "_15M", "_1M", "_1D")
 
     def _find_mt_file_by_prefix(self, prefix: str, interval: Optional[str] = None) -> Optional[str]:
@@ -411,7 +429,7 @@ class MarketDataService:
                 # exactamente, se busca por prefijo en el directorio -- ver
                 # `_candidate_mt_symbols` / `_find_mt_file_by_prefix`.
                 history_file = None
-                for clean_symbol in self._candidate_mt_symbols(asset):
+                for clean_symbol in self._candidate_history_symbols(asset):
                     candidate = os.path.join(settings.MT4_FILES_PATH, f"history_{clean_symbol}_{interval}.csv")
                     if os.path.exists(candidate):
                         history_file = candidate
@@ -421,7 +439,7 @@ class MarketDataService:
                         history_file = candidate
                         break
                 if history_file is None:
-                    by_prefix = self._find_mt_file_by_prefix(self._candidate_mt_symbols(asset)[0], interval)
+                    by_prefix = self._find_mt_file_by_prefix(self._candidate_history_symbols(asset)[0], interval)
                     if by_prefix:
                         history_file = os.path.join(settings.MT4_FILES_PATH, by_prefix)
                         logger.info(f"[MT_SYMBOL_MATCH] {asset}: no hubo coincidencia exacta, se usó '{by_prefix}' por prefijo.")
@@ -453,7 +471,7 @@ class MarketDataService:
                 else:
                     logger.debug(
                         f"[MT_DEBUG] Ningún archivo de historial encontrado para {asset} "
-                        f"(candidatos probados: {self._candidate_mt_symbols(asset)}). "
+                        f"(candidatos probados: {self._candidate_history_symbols(asset)}). "
                         f"Verifica que el símbolo esté agregado en Market Watch de tu terminal, "
                         f"o configura un alias en settings.MT_SYMBOL_ALIASES si tu bróker usa "
                         f"otro nombre. "

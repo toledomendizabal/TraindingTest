@@ -275,6 +275,10 @@ class Settings(BaseSettings):
     # y al EA): US100Cash, GER40Cash, STOXX50Cash, WTI, BRENT, COPPER.
     # OJO: "NDAQ.OQ" del archivo es la ACCIÓN de Nasdaq Inc. (~91 USD), NO el
     # índice Nasdaq-100, por eso NO se usa como alias de US100Cash.
+    # Sufijo que PriceExporter QUITA del nombre de los archivos history_*.csv
+    # (MT5 no admite ".." en nombres de archivo): "EURUSD..." -> history_EURUSD.csv.
+    # Debe coincidir con el input SymbolSuffix del EA. mt4_prices.csv NO cambia.
+    MT_SYMBOL_SUFFIX: str = "..."
     MT_SYMBOL_ALIASES: dict = {
         # Divisas (sufijo "...")
         "EURUSD": "EURUSD...", "GBPUSD": "GBPUSD...", "USDCHF": "USDCHF...",
