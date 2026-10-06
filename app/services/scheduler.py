@@ -108,6 +108,19 @@ class SchedulerService:
             replace_existing=True
         )
 
+        # CAMBIO (a pedido del usuario, 2026-10-05): efectividad por
+        # estrategia (estrategias_performance.xlsx), cada 15 minutos --
+        # mismo patrón que daily_kpis_refresh.
+        self.scheduler.add_job(
+            self._update_strategy_performance,
+            IntervalTrigger(minutes=15),
+            id="strategy_performance_refresh",
+            name="Strategy Performance Refresh (efectividad por estrategia)",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True
+        )
+
         # CAMBIO (a pedido del usuario, 2026-08-12): reinicio programado
         # del proceso cada PROCESS_RESTART_INTERVAL_HOURS (12h por
         # defecto), para evitar degradación acumulada de un proceso de
@@ -249,6 +262,14 @@ class SchedulerService:
             await excel_manager.update_daily_kpis_file()
         except Exception as e:
             logger.error(f"Error actualizando KPIs diarios: {e}")
+
+    async def _update_strategy_performance(self):
+        """Regenera estrategias_performance.xlsx (efectividad % / TP / SL / total por estrategia)."""
+        try:
+            from app.services.excel_manager import excel_manager
+            await excel_manager.update_strategy_performance_file()
+        except Exception as e:
+            logger.error(f"Error actualizando efectividad por estrategia: {e}")
 
     async def _mt5_health_check(self):
         """

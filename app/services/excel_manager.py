@@ -72,6 +72,10 @@ class ExcelManager:
         # MT5 si está habilitado). Si expira sin la segunda confirmación,
         # pasa a EXPIRADA y no se activa.
         self.pending_signals_file = os.path.join(self.excel_dir, "senales_por_confirmar.xlsx")
+        # CAMBIO (a pedido del usuario, 2026-10-05): archivo dedicado con
+        # la efectividad por estrategia (% de aciertos, # operaciones en
+        # SL, # operaciones en TP, # total) -- ver `update_strategy_performance_file`.
+        self.strategy_performance_file = os.path.join(self.excel_dir, "estrategias_performance.xlsx")
         self._ensure_files()
 
     def _ensure_files(self):
@@ -89,6 +93,21 @@ class ExcelManager:
         # Create pending-confirmation signals file
         if not os.path.exists(self.pending_signals_file):
             self._create_pending_signals_file()
+
+        # Create strategy performance report file
+        if not os.path.exists(self.strategy_performance_file):
+            self._create_strategy_performance_file()
+
+    def _create_strategy_performance_file(self):
+        """Crea el Excel de 'Efectividad por Estrategia' (inicialmente vacío)."""
+        columns = [
+            "strategy_id", "strategy_name", "total_operaciones",
+            "operaciones_en_tp", "operaciones_en_sl", "operaciones_activas",
+            "efectividad_pct", "profit_loss_neto",
+        ]
+        df = pd.DataFrame(columns=columns)
+        df.to_excel(self.strategy_performance_file, index=False, sheet_name="EfectividadPorEstrategia")
+        logger.info(f"Created strategy performance file: {self.strategy_performance_file}")
 
     def _create_pending_signals_file(self):
         """Crea el Excel de 'Señales por Confirmar' (estrategia parcial)."""
@@ -705,6 +724,77 @@ class ExcelManager:
         except Exception as e:
             logger.error(f"Error calculando KPIs diarios: {e}")
             return []
+
+    def get_strategy_performance(self) -> List[Dict]:
+        """
+        CAMBIO (a pedido del usuario, 2026-10-05): calcula, por cada
+        estrategia (1-18 de ASSET_GROUPS + 19/20/21 de prioridad), cuántas
+        operaciones tuvo en total, cuántas cerraron en Take Profit (status
+        CLOSED_TP1/TP2/TP3/BE -- cualquiera que haya alcanzado al menos
+        TP1), cuántas cerraron en Stop Loss (status CLOSED_SL), cuántas
+        siguen ACTIVE, la efectividad en % (TP / (TP+SL), sin contar las
+        activas que todavía no tienen resultado), y el P/L neto acumulado.
+
+        Se recalcula desde cero cada vez a partir de signals_tracking.xlsx
+        (mismo patrón que `get_daily_kpis`), así que nunca queda
+        desalineado.
+        """
+        try:
+            df = pd.read_excel(self.signals_file, sheet_name="Signals")
+        except Exception as e:
+            logger.error(f"Error leyendo signals_tracking.xlsx para efectividad por estrategia: {e}")
+            return []
+
+        if df.empty or "strategy_id" not in df.columns:
+            return []
+
+        tp_statuses = {"CLOSED_TP1", "CLOSED_TP2", "CLOSED_TP3", "CLOSED_BE"}
+        records = []
+
+        for (sid, sname), group in df.groupby(["strategy_id", "strategy_name"], dropna=False):
+            if pd.isna(sid):
+                continue
+            total = len(group)
+            active = int((group["status"] == "ACTIVE").sum())
+            tp_count = int(group["status"].isin(tp_statuses).sum())
+            sl_count = int((group["status"] == "CLOSED_SL").sum())
+            closed_with_result = tp_count + sl_count
+            effectiveness = round((tp_count / closed_with_result) * 100, 1) if closed_with_result > 0 else 0.0
+            net_pl = float(group["profit_loss"].fillna(0).sum()) if "profit_loss" in group.columns else 0.0
+
+            records.append({
+                "strategy_id": int(sid),
+                "strategy_name": str(sname) if pd.notna(sname) else "",
+                "total_operaciones": total,
+                "operaciones_en_tp": tp_count,
+                "operaciones_en_sl": sl_count,
+                "operaciones_activas": active,
+                "efectividad_pct": effectiveness,
+                "profit_loss_neto": round(net_pl, 2),
+            })
+
+        records.sort(key=lambda r: r["total_operaciones"], reverse=True)
+        return records
+
+    async def update_strategy_performance_file(self) -> bool:
+        """
+        Regenera por completo estrategias_performance.xlsx -- ver
+        `get_strategy_performance`. Se llama periódicamente desde el
+        scheduler (igual que daily_kpis) y puede llamarse bajo demanda.
+        """
+        try:
+            records = self.get_strategy_performance()
+            df = pd.DataFrame(records) if records else pd.DataFrame(
+                columns=["strategy_id", "strategy_name", "total_operaciones",
+                         "operaciones_en_tp", "operaciones_en_sl", "operaciones_activas",
+                         "efectividad_pct", "profit_loss_neto"]
+            )
+            df.to_excel(self.strategy_performance_file, index=False, sheet_name="EfectividadPorEstrategia")
+            logger.info(f"estrategias_performance.xlsx actualizado: {len(df)} estrategia(s) con datos.")
+            return True
+        except Exception as e:
+            logger.error(f"Error actualizando estrategias_performance.xlsx: {e}")
+            return False
 
     async def update_daily_kpis_file(self) -> bool:
         """

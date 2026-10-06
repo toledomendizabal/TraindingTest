@@ -162,10 +162,28 @@ class SignalEngine:
                 logger.info(f"[REJECT] {asset}: sin datos históricos (sin archivo de historial MT5 para este símbolo; Twelve Data desactivado).")
                 return signals
 
-            results = strategy_engine.evaluate_independent(asset, df)
+            # CAMBIO (a pedido del usuario, 2026-10-05 -- 3 estrategias
+            # nuevas del documento "Trading Bot Strategies and
+            # Parameters", EN PRIMER ORDEN sobre las 18 anteriores): se
+            # intenta primero la estrategia de prioridad de la clase de
+            # activo (Forex / Oro-Plata / Índices). Si confirma, se usa
+            # ESA señal exclusivamente este ciclo -- NO se evalúan las
+            # estrategias de segundo orden (evaluate_independent) para
+            # este activo. Si no confirma (o el activo no tiene clase de
+            # prioridad asignada), se cae al comportamiento de siempre.
+            priority_result = await strategy_engine.evaluate_priority(asset, df)
+            if priority_result:
+                results = [priority_result]
+                logger.info(
+                    f"[PRIORIDAD] {asset}: confirmó la Estrategia "
+                    f"{priority_result['strategy_id']} ({priority_result['strategy_name']}) "
+                    f"-- no se evalúan las estrategias de segundo orden este ciclo."
+                )
+            else:
+                results = strategy_engine.evaluate_independent(asset, df)
 
             if not results:
-                logger.info(f"[REJECT] {asset}: ninguna estrategia asignada confirmó dirección este ciclo.")
+                logger.info(f"[REJECT] {asset}: ninguna estrategia (prioridad ni segundo orden) confirmó dirección este ciclo.")
                 return signals
 
             for res in results:
@@ -559,8 +577,12 @@ class SignalEngine:
                 lot_size=lot_size,
                 timeframe=self.signal_timeframe,
                 indicators_met=indicators_met,
-                total_indicators=max(len(get_strategies_for_asset(asset)), 1),
-                score=float(indicators_met / max(len(get_strategies_for_asset(asset)), 1)),  # Normalized score (0-1: proporción de estrategias asignadas que confirmaron)
+                # CAMBIO (2026-10-05): para señales de una estrategia de
+                # PRIORIDAD (id 19/20/21), el total correcto es 1 (es la
+                # única que se evalúa ese ciclo), no `len(get_strategies_for_asset(asset))`
+                # (que cuenta las de segundo orden, que ni se llegaron a evaluar).
+                total_indicators=1 if strategy_id in (19, 20, 21) else max(len(get_strategies_for_asset(asset)), 1),
+                score=float(indicators_met / (1 if strategy_id in (19, 20, 21) else max(len(get_strategies_for_asset(asset)), 1))),
                 indicators_detail=strategy_details or [],
                 strategy_id=strategy_id,
                 strategy_name=strategy_name,

@@ -56,6 +56,7 @@ la lista de números en `ASSET_GROUPS`.
 """
 import numpy as np
 import pandas as pd
+from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 from loguru import logger
 
@@ -115,11 +116,258 @@ ASSET_GROUPS: Dict[str, Dict] = {
         "complementary": ["VIX", "XAUUSD", "BUND"],
     },
     "METALS_COMMODITIES": {
-        "assets": ["XAUUSD", "WTI", "BRENT", "COPPER"],
+        # CAMBIO (2026-10-05, nuevas estrategias de prioridad): se agrega
+        # XAGUSD (Plata) -- el documento "Trading Bot Strategies and
+        # Parameters" trata Oro y Plata como la misma clase de activo para
+        # la Estrategia de Prioridad B (Ruptura + Confirmación de Mecha),
+        # pero XAGUSD no estaba en ACTIVE_ASSETS todavía. Se agrega aquí Y
+        # en app/core/config.py ACTIVE_ASSETS para que el motor realmente
+        # la analice. WTI/BRENT/COPPER NO son Oro/Plata, así que NO
+        # reciben la nueva estrategia de prioridad (ver PRIORITY_ASSET_GROUPS).
+        "assets": ["XAUUSD", "XAGUSD", "WTI", "BRENT", "COPPER"],
         "strategies": [8, 5],  # Bollinger (reversión/cobertura) / Pullback EMA (tendencia macro)
         "complementary": ["DXY", "TIPS", "AUDUSD"],
     },
 }
+
+# ======================================================================
+# ESTRATEGIAS DE PRIORIDAD (2026-10-05, a pedido del usuario)
+# ======================================================================
+# Origen: documento "Trading Bot Strategies and Parameters" (adjuntado por
+# el usuario). Se implementan 3 estrategias nuevas, una por clase de
+# activo, y se evalúan EN PRIMER ORDEN -- si alguna confirma para el
+# activo en el ciclo actual, esa señal se usa y las estrategias "de
+# segundo orden" (las 18 de ASSET_GROUPS de arriba) NO se evalúan ese
+# ciclo para ese activo. Si ninguna de prioridad confirma, se cae al
+# comportamiento de siempre (evaluate_independent sobre las estrategias
+# asignadas en ASSET_GROUPS).
+#
+# RIESGO: a pedido explícito del usuario, estas estrategias NO traen su
+# propia gestión de riesgo/TP -- usan exactamente el mismo framework de
+# SL/TP/tamaño de posición ya configurado en el sistema (ver
+# `_finalize_signal` en signal_engine.py y TP1_R_MULTIPLE/TP2/TP3/
+# RISK_PERCENTAGE en config.py). El documento original especificaba
+# porcentajes de riesgo (1%/0.5%/0.75%) y relaciones R:R propias por
+# clase de activo -- deliberadamente NO se usan, por instrucción directa.
+#
+# LIMITACIÓN DE DATOS CONOCIDA: el documento especifica LTF=15m para la
+# estrategia de Forex, pero el EA de MT5 actualmente desplegado
+# (scripts/PriceExporter.mq5) exporta M1 (base), 30m, 1h, 4h y 1d -- NO
+# 15m. Para no requerir que el usuario recompile y redespliegue el EA de
+# nuevo, se usa 30m como "LTF" (más cercano al espíritu del 15m original
+# que usar directamente el 5m del ciclo principal, y ya disponible sin
+# cambios en MT5). Si en el futuro se agrega exportación de 15m al EA,
+# ajustar `PRIORITY_LTF_INTERVAL` abajo.
+PRIORITY_HTF_INTERVAL = "1h"
+PRIORITY_LTF_INTERVAL = "30m"
+
+# Qué estrategia de prioridad aplica a cada activo (por nombre de función,
+# asignado más abajo tras definir las funciones).
+PRIORITY_ASSET_GROUPS = {
+    "FOREX": {
+        "assets": (
+            ASSET_GROUPS["FOREX_MAJORS"]["assets"]
+            + ASSET_GROUPS["FOREX_YEN_COMMODITY"]["assets"]
+            + ASSET_GROUPS["FOREX_CROSSES"]["assets"]
+        ),
+        "strategy_id": 19,
+    },
+    "GOLD_SILVER": {
+        "assets": ["XAUUSD", "XAGUSD"],
+        "strategy_id": 20,
+    },
+    "INDICES": {
+        "assets": ASSET_GROUPS["INDICES"]["assets"],
+        "strategy_id": 21,
+    },
+}
+
+PRIORITY_STRATEGY_NAMES = {
+    19: "[PRIORIDAD] Forex: Pullback EMA 1H/30m + RSI(45/55)",
+    20: "[PRIORIDAD] Oro/Plata: Ruptura de Nivel + Confirmación de Mecha",
+    21: "[PRIORIDAD] Índices: Reversión a la Media (Bollinger + RSI extremo)",
+}
+
+
+def get_priority_asset_class(asset: str) -> Optional[str]:
+    """Retorna 'FOREX' | 'GOLD_SILVER' | 'INDICES' | None."""
+    for group, info in PRIORITY_ASSET_GROUPS.items():
+        if asset.upper() in [a.upper() for a in info["assets"]]:
+            return group
+    return None
+
+
+def _in_utc_window(start_hour: int, end_hour: int, start_min: int = 0, end_min: int = 0) -> bool:
+    """
+    Chequeo simple de ventana horaria UTC (Módulo 1.1 del documento).
+    Soporta minutos para las ventanas de índices (evitar los primeros/
+    últimos 15 minutos de la sesión).
+    """
+    now = datetime.utcnow()
+    start_total = start_hour * 60 + start_min
+    end_total = end_hour * 60 + end_min
+    now_total = now.hour * 60 + now.minute
+    return start_total <= now_total < end_total
+
+
+def _priority_session_forex_ok() -> bool:
+    """Módulo 1.1: Forex -- sesión Londres+NY, 07:00-16:00 UTC."""
+    return _in_utc_window(7, 16)
+
+
+def _priority_session_gold_silver_ok() -> bool:
+    """Módulo 1.1: Oro/Plata -- solapamiento Londres-NY, 12:00-16:00 UTC."""
+    return _in_utc_window(12, 16)
+
+
+def _priority_session_indices_ok() -> bool:
+    """
+    Módulo 1.1: Índices -- apertura NY, 13:30-20:00 UTC, EXCLUYENDO los
+    primeros y últimos 15 minutos de esa ventana (13:30-13:45 y
+    19:45-20:00 bloqueados -- volatilidad errática de apertura/cierre).
+    """
+    now = datetime.utcnow()
+    now_total = now.hour * 60 + now.minute
+    window_start = 13 * 60 + 30
+    window_end = 20 * 60
+    if not (window_start <= now_total < window_end):
+        return False
+    if now_total < window_start + 15:
+        return False
+    if now_total >= window_end - 15:
+        return False
+    return True
+
+
+def _priority_forex_pullback(htf_df: pd.DataFrame, ltf_df: pd.DataFrame) -> Optional[Dict]:
+    """
+    ESTRATEGIA DE PRIORIDAD 19 (Módulo 2.1 del documento) -- Forex:
+    Tendencia por Pullback con EMAs, multi-timeframe.
+
+    - Filtro HTF (1h): EMA 50 > EMA 200 = alcista; EMA 50 < EMA 200 = bajista.
+    - Gatillo LTF (30m, ver PRIORITY_LTF_INTERVAL): retroceso a EMA 50 +
+      RSI(14) cruzando 45 hacia arriba (alcista) o 55 hacia abajo (bajista).
+    - SL/TP: NO se calculan aquí -- los asigna el framework de riesgo ya
+      configurado en el sistema (sin cambios, a pedido del usuario).
+    """
+    if not _priority_session_forex_ok():
+        return None
+    if htf_df is None or ltf_df is None or len(htf_df) < 210 or len(ltf_df) < 20:
+        return None
+
+    ema50_htf = _ema(htf_df["close"], 50)
+    ema200_htf = _ema(htf_df["close"], 200)
+    trend_up = ema50_htf.iloc[-1] > ema200_htf.iloc[-1]
+    trend_down = ema50_htf.iloc[-1] < ema200_htf.iloc[-1]
+
+    ema50_ltf = _ema(ltf_df["close"], 50)
+    rsi_ltf = _rsi(ltf_df["close"], 14)
+    price = float(ltf_df["close"].iloc[-1])
+
+    if pd.isna(ema50_ltf.iloc[-1]) or pd.isna(rsi_ltf.iloc[-1]) or pd.isna(rsi_ltf.iloc[-2]):
+        return None
+
+    near_ema50 = abs(price - ema50_ltf.iloc[-1]) / price < 0.0015
+    rsi_cross_up_45 = rsi_ltf.iloc[-2] <= 45 and rsi_ltf.iloc[-1] > 45
+    rsi_cross_down_55 = rsi_ltf.iloc[-2] >= 55 and rsi_ltf.iloc[-1] < 55
+
+    if trend_up and near_ema50 and rsi_cross_up_45:
+        return {"direction": "BUY", "detail": "HTF 1h alcista (EMA50>EMA200) + pullback a EMA50 en 30m + RSI cruzó 45 al alza"}
+    if trend_down and near_ema50 and rsi_cross_down_55:
+        return {"direction": "SELL", "detail": "HTF 1h bajista (EMA50<EMA200) + pullback a EMA50 en 30m + RSI cruzó 55 a la baja"}
+    return None
+
+
+def _priority_gold_silver_breakout(df: pd.DataFrame) -> Optional[Dict]:
+    """
+    ESTRATEGIA DE PRIORIDAD 20 (Módulo 2.2 del documento) -- Oro/Plata:
+    Ruptura de Nivel Clave con Confirmación de Mecha/Cuerpo.
+
+    - Nivel clave: máximo/mínimo de las últimas 30 velas (excluyendo las
+      2 más recientes, que son la vela de ruptura y la de confirmación).
+    - Regla "evitar la primera vela": no se opera en la vela que rompe el
+      nivel -- se espera UNA vela adicional de confirmación cuyo cuerpo
+      sea mayor al 50% del cuerpo de la vela de ruptura, en la MISMA
+      dirección (evita falsas rupturas de un solo impulso).
+    - SL/TP: framework de riesgo existente, sin cambios.
+    """
+    if not _priority_session_gold_silver_ok():
+        return None
+    if df is None or len(df) < 35:
+        return None
+
+    level_high = df["high"].iloc[-32:-2].max()
+    level_low = df["low"].iloc[-32:-2].min()
+
+    breakout_candle = df.iloc[-2]
+    confirm_candle = df.iloc[-1]
+
+    breakout_body = abs(breakout_candle["close"] - breakout_candle["open"]) + 1e-9
+    confirm_body = abs(confirm_candle["close"] - confirm_candle["open"])
+    confirm_strong = confirm_body > 0.5 * breakout_body
+
+    broke_up = breakout_candle["close"] > level_high
+    broke_down = breakout_candle["close"] < level_low
+    confirm_bullish = confirm_candle["close"] > confirm_candle["open"]
+    confirm_bearish = confirm_candle["close"] < confirm_candle["open"]
+
+    if broke_up and confirm_bullish and confirm_strong:
+        return {"direction": "BUY", "detail": f"Ruptura de nivel clave ({level_high:.2f}) + vela de confirmación con cuerpo >50% de la ruptura"}
+    if broke_down and confirm_bearish and confirm_strong:
+        return {"direction": "SELL", "detail": f"Ruptura de nivel clave ({level_low:.2f}) + vela de confirmación con cuerpo >50% de la ruptura"}
+    return None
+
+
+def _priority_indices_mean_reversion(htf_df: pd.DataFrame, ltf_df: pd.DataFrame) -> Optional[Dict]:
+    """
+    ESTRATEGIA DE PRIORIDAD 21 (Módulo 2.3 del documento) -- Índices:
+    Reversión a la Media.
+
+    - Filtro HTF (1h): solo opera si el índice está en rango lateral (ancho
+      de Bandas de Bollinger actual por debajo de su propio promedio
+      reciente) -- evita operar reversión a la media en tendencias fuertes.
+    - Gatillo LTF: toque de banda superior/inferior de Bollinger(20,2) +
+      RSI(14) en extremo (>75 o <25) + vela de rechazo (mecha >= cuerpo).
+    - SL/TP: framework de riesgo existente, sin cambios (el objetivo
+      conceptual del documento es la media/SMA20, pero se usan los TP ya
+      configurados para no alterar el riesgo, según instrucción del usuario).
+    """
+    if not _priority_session_indices_ok():
+        return None
+    if htf_df is None or ltf_df is None or len(htf_df) < 40 or len(ltf_df) < 25:
+        return None
+
+    upper_htf, mid_htf, lower_htf = _bollinger(htf_df, 20, 2.0)
+    band_width_htf = (upper_htf - lower_htf) / mid_htf
+    current_width = band_width_htf.iloc[-1]
+    avg_width = band_width_htf.iloc[-30:].mean()
+    if pd.isna(current_width) or pd.isna(avg_width) or avg_width == 0:
+        return None
+    is_ranging = current_width < avg_width * 1.05  # lateral, no en expansión de tendencia
+
+    upper, mid, lower = _bollinger(ltf_df, 20, 2.0)
+    rsi_ltf = _rsi(ltf_df["close"], 14)
+    price = float(ltf_df["close"].iloc[-1])
+    last = ltf_df.iloc[-1]
+    body = abs(last["close"] - last["open"]) + 1e-9
+    upper_wick = last["high"] - max(last["close"], last["open"])
+    lower_wick = min(last["close"], last["open"]) - last["low"]
+
+    if pd.isna(upper.iloc[-1]) or pd.isna(lower.iloc[-1]) or pd.isna(rsi_ltf.iloc[-1]):
+        return None
+
+    touched_upper = price >= upper.iloc[-1]
+    touched_lower = price <= lower.iloc[-1]
+    rsi_overbought = rsi_ltf.iloc[-1] > 75
+    rsi_oversold = rsi_ltf.iloc[-1] < 25
+    rejection_bearish = upper_wick >= body
+    rejection_bullish = lower_wick >= body
+
+    if is_ranging and touched_upper and rsi_overbought and rejection_bearish:
+        return {"direction": "SELL", "detail": "HTF 1h en rango + toque de banda superior + RSI>75 + vela de rechazo"}
+    if is_ranging and touched_lower and rsi_oversold and rejection_bullish:
+        return {"direction": "BUY", "detail": "HTF 1h en rango + toque de banda inferior + RSI<25 + vela de rechazo"}
+    return None
 
 # Traducción de los nombres genéricos de la tabla (por si se muestran en UI/reportes)
 STRATEGY_NAMES = {
@@ -328,11 +576,32 @@ def _vwap(df: pd.DataFrame) -> pd.Series:
 
 
 def _rsi(series: pd.Series, period: int = 14) -> pd.Series:
+    """
+    CAMBIO CRÍTICO (fix, 2026-10-05 -- encontrado al probar la nueva
+    estrategia de prioridad de Índices): cuando una ventana no tiene
+    NINGUNA pérdida (racha pura de ganancias), `loss` vale 0 y
+    `loss.replace(0, np.nan)` lo convertía en NaN para evitar la división
+    por cero -- pero eso hacía que el RSI entero diera NaN justo en el
+    caso de momentum más extremo (debería dar 100, el máximo posible, no
+    "sin dato"). Cualquier chequeo tipo `rsi > 75` evaluaba False en
+    silencio para un NaN, así que estrategias que dependen de RSI en
+    extremos (7, 9, 12, y la nueva 21) podían perderse exactamente las
+    señales más fuertes. Simétricamente, sin ninguna ganancia (racha pura
+    de pérdidas) debe dar 0, no NaN.
+    """
     delta = series.diff()
     gain = delta.clip(lower=0).rolling(period).mean()
     loss = (-delta.clip(upper=0)).rolling(period).mean()
     rs = gain / loss.replace(0, np.nan)
-    return 100 - (100 / (1 + rs))
+    rsi = 100 - (100 / (1 + rs))
+
+    # Casos borde donde la fórmula normal da NaN por división entre 0:
+    no_loss = loss == 0
+    no_gain = gain == 0
+    rsi = rsi.where(~(no_loss & ~no_gain), 100.0)   # solo ganancias en la ventana -> RSI máximo
+    rsi = rsi.where(~(no_gain & ~no_loss), 0.0)     # solo pérdidas en la ventana -> RSI mínimo
+    rsi = rsi.where(~(no_gain & no_loss), 50.0)     # sin ningún movimiento -> neutral
+    return rsi
 
 
 # ======================================================================
@@ -944,6 +1213,69 @@ class StrategyEngine:
                     "detail": result["detail"],
                 })
         return results
+
+    async def evaluate_priority(self, asset: str, main_df: pd.DataFrame) -> Optional[Dict]:
+        """
+        CAMBIO (a pedido del usuario, 2026-10-05 -- 3 estrategias nuevas
+        del documento "Trading Bot Strategies and Parameters", EN PRIMER
+        ORDEN sobre las 18 anteriores): si el activo pertenece a una clase
+        con estrategia de prioridad asignada (Forex, Oro/Plata, Índices --
+        ver PRIORITY_ASSET_GROUPS), la evalúa ANTES que las estrategias de
+        `evaluate_independent()`. Si confirma, `signal_engine.analyze_asset()`
+        usa ESTA señal y NO evalúa las estrategias de segundo orden ese
+        ciclo para este activo (ver signal_engine.py). Si no confirma (o el
+        activo no tiene clase de prioridad asignada), retorna `None` y
+        `analyze_asset()` sigue con el comportamiento de siempre.
+
+        `settings.disabled_strategy_ids` también aplica aquí -- si el ID
+        19/20/21 está desactivado, esta función no hace nada para esa clase.
+
+        A diferencia de `evaluate_independent` (síncrono, un solo `df`),
+        este método es ASYNC porque las estrategias de Forex e Índices
+        necesitan datos adicionales de otro timeframe (HTF 1h, y para
+        Forex también LTF 30m) -- se piden aquí mismo vía
+        `market_data_service`, en vez de cambiar la firma de
+        `analyze_asset()` para todos los activos (la mayoría no los
+        necesita).
+        """
+        asset_class = get_priority_asset_class(asset)
+        if asset_class is None:
+            return None
+
+        strategy_id = PRIORITY_ASSET_GROUPS[asset_class]["strategy_id"]
+        if strategy_id in settings.disabled_strategy_ids:
+            return None
+
+        # Import diferido para evitar import circular (market_data no
+        # importa strategy_engine, pero se evita por consistencia con el
+        # resto del archivo, que no importa market_data a nivel de módulo).
+        from app.services.market_data import market_data_service
+
+        result = None
+        try:
+            if asset_class == "FOREX":
+                htf_df = await market_data_service.get_time_series(asset, interval=PRIORITY_HTF_INTERVAL, outputsize=250)
+                ltf_df = await market_data_service.get_time_series(asset, interval=PRIORITY_LTF_INTERVAL, outputsize=250)
+                result = _priority_forex_pullback(htf_df, ltf_df)
+            elif asset_class == "GOLD_SILVER":
+                # Un solo timeframe (el del ciclo principal, ya disponible).
+                result = _priority_gold_silver_breakout(main_df)
+            elif asset_class == "INDICES":
+                htf_df = await market_data_service.get_time_series(asset, interval=PRIORITY_HTF_INTERVAL, outputsize=250)
+                result = _priority_indices_mean_reversion(htf_df, main_df)
+        except Exception as e:
+            logger.debug(f"[strategy_engine] Estrategia de prioridad ({asset_class}) falló para {asset}: {e}")
+            result = None
+
+        if not result:
+            return None
+
+        return {
+            "strategy_id": strategy_id,
+            "strategy_name": PRIORITY_STRATEGY_NAMES.get(strategy_id, f"Estrategia {strategy_id}"),
+            "direction": result["direction"],
+            "detail": result["detail"],
+        }
 
 
 strategy_engine = StrategyEngine()

@@ -223,7 +223,11 @@ class Settings(BaseSettings):
         # --- Índices Bursátiles (Fila 4) ---
         "US30Cash", "US500Cash", "US100Cash", "GER40Cash", "STOXX50Cash",
         # --- Materias Primas y Metales (Fila 5) ---
-        "XAUUSD", "WTI", "BRENT", "COPPER",
+        # CAMBIO (2026-10-05, estrategia de prioridad Oro/Plata): se
+        # agrega XAGUSD (Plata) -- no estaba en ACTIVE_ASSETS antes. Ya
+        # tenía entrada en ASSET_CATALOG (pip info) y AVAILABLE_COMMODITIES,
+        # solo faltaba aquí para que el motor realmente la analice.
+        "XAUUSD", "XAGUSD", "WTI", "BRENT", "COPPER",
     ]
 
     # Available Assets (full list) -- ampliado para incluir todos los pares
